@@ -705,6 +705,20 @@ app.patch(
     })
 );
 
+// Available store coupon packs (for players)
+
+app.get(
+    '/api/coupons',
+    auth,
+    wrap(async (req, res) => {
+        const list = await Coupon.find({ active: true })
+            .select('code title cash grantVip vipDays extraSlots maxUses uses')
+            .sort({ cash: 1, createdAt: -1 })
+            .lean();
+        res.json(list);
+    })
+);
+
 // Redeem coupon code (in-app reward pack)
 
 app.post(
@@ -722,10 +736,6 @@ app.post(
         }
 
         const u = req.user;
-
-        if (u.redeemedCoupons?.includes(rawCode)) {
-            throw Error('You have already redeemed this coupon');
-        }
 
         const coupon = await Coupon.findOneAndUpdate(
             {
@@ -776,8 +786,7 @@ app.post(
         const updated = await User.findOneAndUpdate(
             {
                 _id: u._id,
-                version: u.version,
-                redeemedCoupons: { $ne: rawCode }
+                version: u.version
             },
             {
                 $set: {
@@ -786,7 +795,6 @@ app.post(
                     premiumUntil,
                     request
                 },
-                $push: { redeemedCoupons: rawCode },
                 $inc: { version: 1 }
             },
             { new: true }
