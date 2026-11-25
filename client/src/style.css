@@ -434,6 +434,14 @@ progress { width: 100%; accent-color: var(--primary); }
 .store-pack strong { display: block; font-size: 14px; margin-top: 4px; color: #0f172a; }
 .store-pack span.muted { display: block; margin-top: 2px; }
 .store-pack button { margin-top: 0; flex: none; }
+.news-ticker { padding: 12px 14px; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-color: #334155; }
+.news-ticker .eyebrow { color: #38bdf8; margin-bottom: 8px; }
+.ticker-items { display: grid; gap: 6px; }
+.ticker-chip { text-align: left; font-size: 12px; font-weight: 600; padding: 8px 11px; margin: 0; min-height: 36px; border-radius: 10px; box-shadow: none; }
+.ticker-chip.up { background: #064e3b; color: #a7f3d0; }
+.ticker-chip.down { background: #7f1d1d; color: #fecaca; }
+.away-modal h2 { font-size: 32px; color: var(--primary); margin: 6px 0; }
+.away-modal .profile-kv { text-align: left; }
 
 nav .game-art { width: 24px; height: 24px; padding: 2px; background: none; border-radius: 0; margin: 0 auto 4px; }
 nav button:not(.selected) .game-art { filter: grayscale(1); opacity: .7; }
