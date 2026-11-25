@@ -1,0 +1,36 @@
+import GameArt from './GameArt.jsx';
+import React,{useState,useId} from 'react';
+import Decimal from 'decimal.js';
+import {price} from '../../shared/engine.js';
+const money=x=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(Number(x));
+const ranges={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760};
+export default function MarketCard({item,category,owned,at,cash,act}){
+ const [range,R]=useState('1W'),[side,S]=useState('buy'),[mode,M]=useState('qty'),[qty,Q]=useState('1'),[usd,U]=useState('1000'),[hover,H]=useState(null); const id=useId().replace(/:/g,'');
+ const hours=ranges[range],end=Math.floor(at/3600000)*3600000, count=Math.min(hours,120);
+ const points=Array.from({length:count+1},(_,i)=>{const t=end-Math.round(hours*(1-i/count))*3600000;return {t,v:Number(price(item,t))}});
+ const current=points.at(-1).v, first=points[0].v, change=(current/first-1)*100, up=change>=0, color=up?'#087f5b':'#c24141';
+ const min=Math.min(...points.map(p=>p.v)),max=Math.max(...points.map(p=>p.v)),pad=Math.max((max-min)*.12,max*.005,.00001),lo=min-pad,hi=max+pad;
+ const X=i=>8+i/count*254,Y=v=>12+(hi-v)/(hi-lo)*112;
+ const line=points.map((p,i)=>`${i?'L':'M'}${X(i).toFixed(2)},${Y(p.v).toFixed(2)}`).join(' ');
+ const selected=points[hover??count]||points[count];
+ const limit=side==='buy'?Math.max(0,Math.min(1000000,Number(new Decimal(cash).div(current).floor()))):Math.min(1000000,owned);
+ const effectiveQty=mode==='qty'?(/^\d+$/.test(qty)?Number(qty):0):(Number(usd)>0?Math.min(1000000,Math.floor(Number(usd)/current)):0);
+ const valid=effectiveQty>0&&effectiveQty<=1000000&&effectiveQty<=limit;
+ const total=new Decimal(current).times(effectiveQty);
+ const presets=[1,10,100,1000];
+ const usdPresets=[100,1000,10000,100000];
+ return <section className="market-card"><div className="line"><div className="art-heading"><GameArt id={item.id}/><div><span className="eyebrow">{category==='stocks'?'EQUITY':'DIGITAL ASSET'}</span><h3>{item.name}</h3></div></div><span className="tag">{owned.toLocaleString()} owned</span></div><div className="market-price">{money(current)}</div><div className={up?'green':'negative'}>{up?'+':''}{change.toFixed(2)}% <span className="muted">· {range}</span></div>
+ <div className="range-tabs">{Object.keys(ranges).map(r=><button key={r} className={range===r?'active':''} onClick={()=>{R(r);H(null)}}>{r}</button>)}</div>
+ <div className="chart-readout">{new Date(selected.t).toLocaleString()} · <b>{money(selected.v)}</b></div>
+ <svg className="market-chart" viewBox="0 0 350 154" role="img" aria-label={`${item.name} simulated price history over ${range}`} onPointerMove={e=>{const b=e.currentTarget.getBoundingClientRect();H(Math.max(0,Math.min(count,Math.round(((e.clientX-b.left)/b.width*350-8)/254*count))))}} onPointerLeave={()=>H(null)}>
+ <defs><linearGradient id={id} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity=".17"/><stop offset="100%" stopColor={color} stopOpacity="0"/></linearGradient></defs>
+ {[0,1,2,3].map(i=>{const v=hi-(hi-lo)*i/3,y=Y(v);return <g key={i}><line x1="8" x2="262" y1={y} y2={y} stroke="#e1e7ed" strokeDasharray="3 3"/><text x="270" y={y+4} fontSize="9" fill="#64748b">{money(v)}</text></g>})}
+ <path d={`${line} L262,124 L8,124 Z`} fill={`url(#${id})`}/><path d={line} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round"/>
+ <line x1={X(hover??count)} x2={X(hover??count)} y1="12" y2="124" stroke={color} strokeDasharray="3 3"/><circle cx={X(hover??count)} cy={Y(selected.v)} r="3" fill={color}/>
+ {[0,.5,1].map((f,i)=><text key={i} x={8+254*f} y="145" textAnchor={i===0?'start':i===2?'end':'middle'} fontSize="9" fill="#64748b">{new Date(points[Math.round(count*f)].t).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</text>)}
+ </svg><p className="muted">Simulated market · hourly price changes {item.dividend?' · Dividend '+money(item.dividend)+'/hr per share':''}</p>
+ <div className="trade-tabs"><button className={side==='buy'?'active':''} onClick={()=>{S('buy');Q('1')}}>Buy</button><button className={side==='sell'?'active':''} onClick={()=>{S('sell');Q('1')}}>Sell</button></div>
+ <div className="trade-tabs"><button className={mode==='qty'?'active':''} onClick={()=>M('qty')}>By {category==='stocks'?'shares':'units'}</button><button className={mode==='usd'?'active':''} onClick={()=>M('usd')}>By custom $ amount</button></div>
+ {mode==='qty'?<><label>Quantity ({category==='stocks'?'shares':'units'})<input type="number" min="1" max="1000000" step="1" inputMode="numeric" value={qty} onChange={e=>Q(e.target.value)}/></label><div className="quantity-tabs">{presets.map(n=><button key={n} className={Number(qty)===n?'active':''} disabled={n>limit} onClick={()=>Q(String(n))}>{n.toLocaleString()}</button>)}<button disabled={!limit} onClick={()=>Q(String(limit))}>Max</button></div></>:<><label>Custom amount (USD)<input type="number" min="1" step="any" inputMode="decimal" value={usd} onChange={e=>U(e.target.value)}/></label><div className="quantity-tabs">{usdPresets.map(n=><button key={n} className={Number(usd)===n?'active':''} onClick={()=>U(String(n))}>${n>=1000?`${n/1000}K`:n}</button>)}<button disabled={!limit} onClick={()=>U(String(new Decimal(current).times(limit).toDecimalPlaces(2)))}>Max</button></div></>}
+ <div className="line trade-total"><span>{effectiveQty.toLocaleString()} {category==='stocks'?'shares':'units'} · {side==='buy'?'Cost':'Proceeds'}</span><strong>{money(total)}</strong></div><button disabled={!valid} onClick={()=>act({type:'trade',category,item:item.id,qty:effectiveQty,sell:side==='sell'})}>{side==='buy'?'Buy':'Sell'} {valid?effectiveQty.toLocaleString():''} {category==='stocks'?'shares':'units'}</button></section>
+}
