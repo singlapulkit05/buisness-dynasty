@@ -370,6 +370,19 @@ app.get(
     }
 );
 
+// Health check
+
+app.get('/api/health', (req, res) => {
+    const dbConnected = mongoose.connection.readyState === 1;
+    res.status(dbConnected ? 200 : 503).json({
+        ok: dbConnected,
+        status: dbConnected ? 'healthy' : 'degraded',
+        db: dbConnected ? 'connected' : 'disconnected',
+        uptime: Math.round(process.uptime()),
+        timestamp: new Date().toISOString()
+    });
+});
+
 // Game catalogue
 
 app.get('/api/catalog', (req, res) => {
