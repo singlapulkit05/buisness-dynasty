@@ -539,6 +539,8 @@ progress { width: 100%; accent-color: var(--primary); }
 @keyframes psLoad { from { width: 0; } to { width: 100%; } }
 @keyframes psGlow { from { box-shadow: 0 0 28px #f59e0b44, 0 0 60px #10b98122; } to { box-shadow: 0 0 48px #f59e0b88, 0 0 90px #10b98155; } }
 @keyframes psFadeOut { to { opacity: 0; } }
+.manager-card { background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%); border-color: #bfdbfe; }
+.auto-pill { display: inline-block; background: #2563eb; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: .06em; padding: 2px 6px; border-radius: 999px; vertical-align: middle; margin-left: 4px; }
 
 nav .game-art { width: 24px; height: 24px; padding: 2px; background: none; border-radius: 0; margin: 0 auto 4px; }
 nav button:not(.selected) .game-art { filter: grayscale(1); opacity: .7; }

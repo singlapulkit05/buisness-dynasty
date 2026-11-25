@@ -155,6 +155,28 @@ function finish(s, t, c) {
 
             b.job = null;
         }
+
+        if (
+            b.manager &&
+            b.manager !== 'paused' &&
+            !b.job &&
+            !s.merger?.inputs.includes(b.id)
+        ) {
+            const x = find(c.businesses, b.type);
+            if (b.manager === 'upgrade' && b.level < x.maxLevel) {
+                const cost = D(x.price).times(.4).times(D(1.2).pow(b.level - 1));
+                if (D(s.cash).gte(cost)) {
+                    s.cash = D(s.cash).minus(cost).toString();
+                    b.job = { kind: 'upgrade', end: t + 60000 * b.level };
+                }
+            } else if (b.manager === 'project' && ['project', 'sports'].includes(x.kind)) {
+                const cost = D(x.price).times(.2);
+                if (D(s.cash).gte(cost)) {
+                    s.cash = D(s.cash).minus(cost).toString();
+                    b.job = { kind: 'project', end: t + 300000, reward: cost.times(1.5).toString() };
+                }
+            }
+        }
     }
 
     if (s.slotJob && s.slotJob <= t) {
@@ -216,6 +238,11 @@ export function settle(state, t, c = defaultCatalog) {
 
     s.at = t;
 
+    s.level = Math.max(
+        s.level,
+        1 + s.businesses.reduce((n, b) => n + b.level, 0)
+    );
+
     return s;
 }
 
@@ -230,6 +257,7 @@ const newBusiness = (type, id, name) => ({
     vault: 0,
     deposit: 3,
     loan: 8,
+    manager: null,
     job: null
 });
 
@@ -480,6 +508,36 @@ export function apply(state, a, t, c = defaultCatalog) {
                 end: t + 300000,
                 reward: cost.times(1.5).toString()
             };
+
+            break;
+        }
+
+        case 'hireManager': {
+            if (!b) {
+                throw Error('Business unavailable');
+            }
+            if (b.manager) {
+                throw Error('Manager already hired');
+            }
+            const x = find(c.businesses, b.type);
+            spend(s, D(x.price).times(1.5));
+            b.manager = 'upgrade';
+
+            break;
+        }
+
+        case 'managerMode': {
+            if (!b || !b.manager) {
+                throw Error('Hire a manager first');
+            }
+            const x = find(c.businesses, b.type);
+            if (a.mode === 'project' && !['project', 'sports'].includes(x.kind)) {
+                throw Error('Not available for this business');
+            }
+            if (!['upgrade', 'project', 'paused'].includes(a.mode)) {
+                throw Error('Invalid manager mode');
+            }
+            b.manager = a.mode;
 
             break;
         }
