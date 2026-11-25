@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import Decimal from 'decimal.js';
 
 import {
     initial,
@@ -85,6 +86,11 @@ const User = mongoose.model(
             ticketApplied: {
                 type: Number,
                 default: 0
+            },
+
+            redeemedCoupons: {
+                type: [String],
+                default: []
             }
         },
         {
@@ -92,6 +98,53 @@ const User = mongoose.model(
             // Prevent MongoDB saves from losing empty objects.
             minimize: false
         }
+    )
+);
+
+const Coupon = mongoose.model(
+    'Coupon',
+    new mongoose.Schema(
+        {
+            code: {
+                type: String,
+                unique: true,
+                uppercase: true,
+                trim: true
+            },
+            title: {
+                type: String,
+                default: 'Reward Pack'
+            },
+            cash: {
+                type: Number,
+                default: 0
+            },
+            grantVip: {
+                type: Boolean,
+                default: false
+            },
+            vipDays: {
+                type: Number,
+                default: null
+            },
+            extraSlots: {
+                type: Number,
+                default: 0
+            },
+            maxUses: {
+                type: Number,
+                default: null
+            },
+            uses: {
+                type: Number,
+                default: 0
+            },
+            active: {
+                type: Boolean,
+                default: true
+            }
+        },
+        { timestamps: true }
     )
 );
 
@@ -106,6 +159,7 @@ async function ensureReady() {
                 );
             }
             await User.init();
+            await Coupon.init();
 
             if (
                 process.env.ADMIN_USERNAME &&
@@ -648,6 +702,217 @@ app.patch(
         res.json({
             ok: true
         });
+    })
+);
+
+// Redeem coupon code (in-app reward pack)
+
+app.post(
+    '/api/coupons/redeem',
+
+    auth,
+
+    wrap(async (req, res) => {
+        const rawCode = typeof req.body.code === 'string'
+            ? req.body.code.trim().toUpperCase()
+            : '';
+
+        if (!/^[A-Z0-9_-]{3,24}$/.test(rawCode)) {
+            throw Error('Invalid coupon code format');
+        }
+
+        const u = req.user;
+
+        if (u.redeemedCoupons?.includes(rawCode)) {
+            throw Error('You have already redeemed this coupon');
+        }
+
+        const coupon = await Coupon.findOneAndUpdate(
+            {
+                code: rawCode,
+                active: true,
+                $or: [
+                    { maxUses: null },
+                    { $expr: { $lt: ['$uses', '$maxUses'] } }
+                ]
+            },
+            { $inc: { uses: 1 } },
+            { new: true }
+        );
+
+        if (!coupon) {
+            throw Error('Coupon is invalid, expired, or out of uses');
+        }
+
+        const now = Date.now();
+        let s = settle(u.state, now, catalog);
+
+        if (coupon.cash > 0) {
+            s.cash = new Decimal(s.cash).plus(coupon.cash).toString();
+        }
+
+        if (coupon.extraSlots > 0) {
+            s.slots = (s.slots || catalog.startingSlots) + coupon.extraSlots;
+        }
+
+        let premium = u.premium;
+        let premiumUntil = u.premiumUntil;
+        let request = u.request;
+
+        if (coupon.grantVip) {
+            premium = true;
+            request = 'approved';
+            if (coupon.vipDays && coupon.vipDays > 0) {
+                const base = Math.max(now, premiumUntil?.getTime() || 0);
+                premiumUntil = new Date(base + coupon.vipDays * 86400000);
+            } else {
+                premiumUntil = null;
+            }
+        }
+
+        s.premium = premium;
+        s.premiumUntil = premiumUntil?.getTime() ?? null;
+
+        const updated = await User.findOneAndUpdate(
+            {
+                _id: u._id,
+                version: u.version,
+                redeemedCoupons: { $ne: rawCode }
+            },
+            {
+                $set: {
+                    state: s,
+                    premium,
+                    premiumUntil,
+                    request
+                },
+                $push: { redeemedCoupons: rawCode },
+                $inc: { version: 1 }
+            },
+            { new: true }
+        );
+
+        if (!updated) {
+            await Coupon.updateOne({ _id: coupon._id }, { $inc: { uses: -1 } });
+            return res.status(409).json({
+                error: 'Sync your save first and try again'
+            });
+        }
+
+        res.json({
+            ok: true,
+            coupon: {
+                code: coupon.code,
+                title: coupon.title,
+                cash: coupon.cash,
+                grantVip: coupon.grantVip,
+                vipDays: coupon.vipDays,
+                extraSlots: coupon.extraSlots
+            },
+            cloud: snapshot(updated)
+        });
+    })
+);
+
+// Admin: Manage coupon codes
+
+function parseCouponBody(body, isEdit = false) {
+    const out = {};
+    if (!isEdit || body.code !== undefined) {
+        const code = typeof body.code === 'string' ? body.code.trim().toUpperCase() : '';
+        if (!/^[A-Z0-9_-]{3,24}$/.test(code)) {
+            throw Error('Code must be 3–24 letters, numbers, _ or -');
+        }
+        out.code = code;
+    }
+    if (body.title !== undefined) {
+        out.title = String(body.title).trim().slice(0, 60) || 'Reward Pack';
+    }
+    if (body.cash !== undefined) {
+        const cash = Number(body.cash);
+        if (!Number.isFinite(cash) || cash < 0 || cash > 1e15) {
+            throw Error('Invalid cash amount');
+        }
+        out.cash = cash;
+    }
+    if (body.extraSlots !== undefined) {
+        const extraSlots = Number(body.extraSlots);
+        if (!Number.isSafeInteger(extraSlots) || extraSlots < 0 || extraSlots > 50) {
+            throw Error('Extra slots must be 0–50');
+        }
+        out.extraSlots = extraSlots;
+    }
+    if (body.grantVip !== undefined) {
+        out.grantVip = Boolean(body.grantVip);
+    }
+    if (body.vipDays !== undefined) {
+        out.vipDays = body.vipDays === null || body.vipDays === ''
+            ? null
+            : Number(body.vipDays);
+        if (out.vipDays !== null && (!Number.isSafeInteger(out.vipDays) || out.vipDays < 1 || out.vipDays > 3650)) {
+            throw Error('VIP days must be 1–3650 or empty for lifetime');
+        }
+    }
+    if (body.maxUses !== undefined) {
+        out.maxUses = body.maxUses === null || body.maxUses === ''
+            ? null
+            : Number(body.maxUses);
+        if (out.maxUses !== null && (!Number.isSafeInteger(out.maxUses) || out.maxUses < 1)) {
+            throw Error('Max uses must be >= 1 or empty');
+        }
+    }
+    if (body.active !== undefined) {
+        out.active = Boolean(body.active);
+    }
+    return out;
+}
+
+app.get(
+    '/api/admin/coupons',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        const list = await Coupon.find().sort({ createdAt: -1 }).lean();
+        res.json(list);
+    })
+);
+
+app.post(
+    '/api/admin/coupons',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        const data = parseCouponBody(req.body, false);
+        const created = await Coupon.create(data);
+        res.json(created);
+    })
+);
+
+app.patch(
+    '/api/admin/coupons/:id',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        const data = parseCouponBody(req.body, true);
+        const updated = await Coupon.findByIdAndUpdate(
+            req.params.id,
+            { $set: data },
+            { new: true }
+        );
+        if (!updated) {
+            return res.status(404).json({ error: 'Coupon not found' });
+        }
+        res.json(updated);
+    })
+);
+
+app.delete(
+    '/api/admin/coupons/:id',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        await Coupon.deleteOne({ _id: req.params.id });
+        res.json({ ok: true });
     })
 );
 
