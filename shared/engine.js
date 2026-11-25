@@ -13,6 +13,7 @@ export function initial(now = Date.now(), c = defaultCatalog) {
         at: now,
         businesses: [],
         holdings: {},
+        costBasis: {},
         properties: {},
         assets: {},
         boosts: [],
@@ -34,7 +35,7 @@ export function initial(now = Date.now(), c = defaultCatalog) {
 export function normalizeState(state) {
     const s = structuredClone(state);
 
-    for (const key of ["holdings", "properties", "assets"]) {
+    for (const key of ["holdings", "costBasis", "properties", "assets"]) {
         s[key] ??= {};
     }
 
@@ -520,6 +521,13 @@ export function apply(state, a, t, c = defaultCatalog) {
 
                 map[x.id] = n - qty;
 
+                if (['stocks', 'crypto'].includes(a.category)) {
+                    const prevCost = D(s.costBasis[x.id] || '0');
+                    s.costBasis[x.id] = n - qty === 0
+                        ? '0'
+                        : prevCost.times(n - qty).div(n).toString();
+                }
+
                 s.cash = add(s.cash, D(p).times(qty));
             } else {
                 if (a.category === 'assets' && n + qty > 1) {
@@ -540,7 +548,12 @@ export function apply(state, a, t, c = defaultCatalog) {
                     }
                 }
 
-                spend(s, D(p).times(qty));
+                const tradeCost = D(p).times(qty);
+                spend(s, tradeCost);
+
+                if (['stocks', 'crypto'].includes(a.category)) {
+                    s.costBasis[x.id] = add(s.costBasis[x.id] || '0', tradeCost);
+                }
 
                 map[x.id] = n + qty;
             }

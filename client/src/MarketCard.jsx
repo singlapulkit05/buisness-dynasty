@@ -2,9 +2,9 @@ import GameArt from './GameArt.jsx';
 import React,{useState,useId} from 'react';
 import Decimal from 'decimal.js';
 import {price} from '../../shared/engine.js';
-const money=x=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(Number(x));
+import {money} from '../../shared/format.js';
 const ranges={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760};
-export default function MarketCard({item,category,owned,at,cash,act}){
+export default function MarketCard({item,category,owned,costBasis,at,cash,act}){
  const [range,R]=useState('1W'),[side,S]=useState('buy'),[mode,M]=useState('qty'),[qty,Q]=useState('1'),[usd,U]=useState('1000'),[hover,H]=useState(null); const id=useId().replace(/:/g,'');
  const hours=ranges[range],end=Math.floor(at/3600000)*3600000, count=Math.min(hours,120);
  const points=Array.from({length:count+1},(_,i)=>{const t=end-Math.round(hours*(1-i/count))*3600000;return {t,v:Number(price(item,t))}});
@@ -17,9 +17,10 @@ export default function MarketCard({item,category,owned,at,cash,act}){
  const effectiveQty=mode==='qty'?(/^\d+$/.test(qty)?Number(qty):0):(Number(usd)>0?Math.min(1000000,Math.floor(Number(usd)/current)):0);
  const valid=effectiveQty>0&&effectiveQty<=1000000&&effectiveQty<=limit;
  const total=new Decimal(current).times(effectiveQty);
+ const cost=Number(costBasis||0),holdVal=current*owned,pnl=holdVal-cost,pnlPct=cost>0?(pnl/cost*100):0;
  const presets=[1,10,100,1000];
  const usdPresets=[100,1000,10000,100000];
- return <section className="market-card"><div className="line"><div className="art-heading"><GameArt id={item.id}/><div><span className="eyebrow">{category==='stocks'?'EQUITY':'DIGITAL ASSET'}</span><h3>{item.name}</h3></div></div><span className="tag">{owned.toLocaleString()} owned</span></div><div className="market-price">{money(current)}</div><div className={up?'green':'negative'}>{up?'+':''}{change.toFixed(2)}% <span className="muted">· {range}</span></div>
+ return <section className="market-card"><div className="line"><div className="art-heading"><GameArt id={item.id}/><div><span className="eyebrow">{category==='stocks'?'EQUITY':'DIGITAL ASSET'}</span><h3>{item.name}</h3></div></div><span className="tag">{owned.toLocaleString()} owned</span></div><div className="market-price">{money(current)}</div><div className={up?'green':'negative'}>{up?'+':''}{change.toFixed(2)}% <span className="muted">· {range}</span></div>{owned>0&&cost>0&&<div className={pnl>=0?'green':'negative'} style={{fontSize:13,marginTop:4}}>P&amp;L: {pnl>=0?'+':''}{money(pnl)} ({pnl>=0?'+':''}{pnlPct.toFixed(2)}%)</div>}
  <div className="range-tabs">{Object.keys(ranges).map(r=><button key={r} className={range===r?'active':''} onClick={()=>{R(r);H(null)}}>{r}</button>)}</div>
  <div className="chart-readout">{new Date(selected.t).toLocaleString()} · <b>{money(selected.v)}</b></div>
  <svg className="market-chart" viewBox="0 0 350 154" role="img" aria-label={`${item.name} simulated price history over ${range}`} onPointerMove={e=>{const b=e.currentTarget.getBoundingClientRect();H(Math.max(0,Math.min(count,Math.round(((e.clientX-b.left)/b.width*350-8)/254*count))))}} onPointerLeave={()=>H(null)}>
