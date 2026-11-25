@@ -402,7 +402,9 @@ app.post(
         const {
             version,
             actions,
-            batch
+            batch,
+            force,
+            state: clientState
         } = req.body;
 
         if (
@@ -420,43 +422,57 @@ app.post(
             return res.json(snapshot(u));
         }
 
+        // If client has no pending local actions, fast-forward to cloud save.
+
+        if (version !== u.version && actions.length === 0 && !force) {
+            return res.json(snapshot(u));
+        }
+
         // Detect conflicts between devices.
 
-        if (version !== u.version) {
+        if (version !== u.version && !force) {
             return res.status(409).json({
-                error: 'Cloud save changed; local actions preserved',
+                error: 'Cloud save changed; choose Cloud or Local save',
                 cloud: snapshot(u)
             });
         }
 
-        let s = structuredClone(u.state);
+        let s = force && clientState && typeof clientState === 'object'
+            ? normalizeState(clientState)
+            : structuredClone(u.state);
 
         const now = Date.now();
 
-        const ids = new Set();
+        if (force && clientState) {
+            if (!Number.isSafeInteger(s.at) || s.at > now) {
+                throw Error('Invalid local save timestamp');
+            }
+        } else {
+            const ids = new Set();
 
-        for (const a of actions) {
-            if (
-                typeof a.id !== 'string' ||
-                a.id.length > 100 ||
-                ids.has(a.id) ||
-                !Number.isSafeInteger(a.at) ||
-                a.at < s.at ||
-                a.at > now
-            ) {
-                throw Error(
-                    'Invalid action timestamp or ID'
+            for (const a of actions) {
+                if (
+                    typeof a.id !== 'string' ||
+                    a.id.length > 100 ||
+                    ids.has(a.id) ||
+                    !Number.isSafeInteger(a.at) ||
+                    a.at < s.at ||
+                    a.at > now
+                ) {
+                    throw Error(
+                        'Invalid action timestamp or ID'
+                    );
+                }
+
+                ids.add(a.id);
+
+                s = apply(
+                    s,
+                    a,
+                    a.at,
+                    catalog
                 );
             }
-
-            ids.add(a.id);
-
-            s = apply(
-                s,
-                a,
-                a.at,
-                catalog
-            );
         }
 
         // Calculate passive income and restore missing maps.
