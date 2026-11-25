@@ -712,7 +712,7 @@ app.get(
     auth,
     wrap(async (req, res) => {
         const list = await Coupon.find({ active: true })
-            .select('code title cash grantVip vipDays extraSlots maxUses uses')
+            .select('title cash grantVip vipDays extraSlots maxUses uses')
             .sort({ cash: 1, createdAt: -1 })
             .lean();
         res.json(list);
