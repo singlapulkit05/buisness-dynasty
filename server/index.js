@@ -643,22 +643,24 @@ app.use('/api', (req, res) => {
     });
 });
 
-// Serve production React frontend
+// Serve production React frontend locally (handled by client service on Vercel)
 
-app.use(
-    express.static(
-        path.join(root, 'client/dist')
-    )
-);
-
-app.get('*', (req, res) => {
-    res.sendFile(
-        path.join(
-            root,
-            'client/dist/index.html'
+if (!process.env.VERCEL) {
+    app.use(
+        express.static(
+            path.join(root, 'client/dist')
         )
     );
-});
+
+    app.get('*', (req, res) => {
+        res.sendFile(
+            path.join(
+                root,
+                'client/dist/index.html'
+            )
+        );
+    });
+}
 
 // Error handling
 
