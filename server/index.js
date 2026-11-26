@@ -243,6 +243,11 @@ const loginLimit = rateLimit({
     limit: 10
 });
 
+const couponLimit = rateLimit({
+    windowMs: 60000,
+    limit: 15
+});
+
 // Authentication cookie
 
 function cookie(res, u) {
@@ -498,8 +503,15 @@ app.post(
         const now = Date.now();
 
         if (force && clientState) {
-            if (!Number.isSafeInteger(s.at) || s.at > now) {
-                throw Error('Invalid local save timestamp');
+            if (
+                !Number.isSafeInteger(s.at) ||
+                s.at > now ||
+                typeof s.cash !== 'string' ||
+                !Number.isFinite(Number(s.cash)) ||
+                !Array.isArray(s.businesses) ||
+                !Array.isArray(s.boosts)
+            ) {
+                throw Error('Invalid local save structure');
             }
         } else {
             const ids = new Set();
@@ -725,6 +737,7 @@ app.post(
     '/api/coupons/redeem',
 
     auth,
+    couponLimit,
 
     wrap(async (req, res) => {
         const rawCode = typeof req.body.code === 'string'

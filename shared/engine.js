@@ -26,6 +26,7 @@ export function initial(now = Date.now(), c = defaultCatalog) {
         merger: null,
         tickets: 0,
         history: [],
+        ledger: [],
         earned: { business: '0', property: '0', dividend: '0', project: '0' },
         premium: false,
         premiumUntil: null,
@@ -51,6 +52,7 @@ export function normalizeState(state) {
         s.earned[k] ??= '0';
     }
 
+    s.ledger ??= [];
     s.businesses = (s.businesses || []).map(normalizeBusiness);
 
     return s;
@@ -332,6 +334,7 @@ function reward(s, a, t, c) {
 
 export function apply(state, a, t, c = defaultCatalog) {
     const s = settle(state, t, c);
+    const cashBeforeAction = s.cash;
 
     const b = a.target
         ? s.businesses.find(x => x.id === a.target)
@@ -745,7 +748,87 @@ export function apply(state, a, t, c = defaultCatalog) {
         )
     );
 
+    const deltaCash = D(s.cash).minus(cashBeforeAction);
+    if (!deltaCash.isZero()) {
+        const catMap = {
+            buyBusiness: 'business', sellBusiness: 'business', upgrade: 'business', upgradeBiz: 'business',
+            buyExtra: 'business', project: 'business', merge: 'business', hireManager: 'business', expand: 'business',
+            upgradeStorage: 'asset',
+            trade: a.category === 'properties' ? 'property' : a.category === 'assets' ? 'asset' : 'invest'
+        };
+        s.ledger = [{
+            id: a.id || `${a.type}-${t}`,
+            at: t,
+            type: a.type,
+            category: catMap[a.type] || 'operation',
+            source: a.item || a.kind || a.target || a.type,
+            amount: deltaCash.toString(),
+            prevCash: cashBeforeAction,
+            newCash: s.cash
+        }, ...(s.ledger || [])].slice(0, 200);
+    }
+
     return s;
+}
+
+export function financialStatement(state, c = defaultCatalog) {
+    const s = normalizeState(state);
+    const cash = D(s.cash);
+    let bizVal = D(0), bizRev = D(0), bizExp = D(0), bizNet = D(0);
+    const businessRows = s.businesses.map(b => {
+        const sim = simulateBusiness(s, b, s.at, c);
+        const val = D(businessValuation(b, c));
+        bizVal = bizVal.plus(val);
+        bizRev = bizRev.plus(sim.revenue);
+        bizExp = bizExp.plus(sim.expenses);
+        bizNet = bizNet.plus(sim.netProfit);
+        return { id: b.id, type: b.type, name: b.name, level: b.level, val: val.toString(), ...sim };
+    });
+
+    let investVal = D(0), divRev = D(0);
+    for (const x of [...c.stocks, ...c.crypto]) {
+        const qty = s.holdings?.[x.id] || 0;
+        if (qty > 0) {
+            investVal = investVal.plus(D(price(x, s.at)).times(qty));
+            if (x.dividend) divRev = divRev.plus(D(x.dividend).times(qty));
+        }
+    }
+
+    let propVal = D(0), propRev = D(0);
+    for (const p of c.properties) {
+        const qty = s.properties?.[p.id] || 0;
+        if (qty > 0) {
+            propVal = propVal.plus(D(p.price).times(qty));
+            propRev = propRev.plus(D(p.income).times(qty));
+        }
+    }
+
+    let assetVal = D(0);
+    for (const x of c.assets) {
+        const qty = s.assets?.[x.id] || 0;
+        if (qty > 0) assetVal = assetVal.plus(D(x.price).times(qty));
+    }
+
+    const totalAssets = cash.plus(bizVal).plus(investVal).plus(propVal).plus(assetVal);
+    const liabilities = D(0);
+    const netWorthVal = totalAssets.minus(liabilities);
+    const grossRev = bizRev.plus(propRev).plus(divRev);
+    const netHourly = bizNet.plus(propRev).plus(divRev);
+
+    return {
+        cash: cash.toString(),
+        bizVal: bizVal.toString(),
+        investVal: investVal.toString(),
+        propVal: propVal.toString(),
+        assetVal: assetVal.toString(),
+        totalAssets: totalAssets.toString(),
+        liabilities: liabilities.toString(),
+        netWorth: netWorthVal.toString(),
+        grossRev: grossRev.toString(),
+        expenses: bizExp.toString(),
+        netHourly: netHourly.toString(),
+        businessRows
+    };
 }
 
 export function netWorth(s, c = defaultCatalog) {
