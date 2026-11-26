@@ -1,6 +1,8 @@
 
 import Decimal from 'decimal.js';
 import { catalog as defaultCatalog } from './catalog.js';
+import { getBusinessModel } from './business-models.js';
+import { normalizeBusiness, simulateBusiness, upgradeSpec, businessValuation } from './business-sim.js';
 
 Decimal.set({ precision: 40 });
 
@@ -49,6 +51,8 @@ export function normalizeState(state) {
         s.earned[k] ??= '0';
     }
 
+    s.businesses = (s.businesses || []).map(normalizeBusiness);
+
     return s;
 }
 
@@ -81,33 +85,7 @@ export function price(item, t) {
 }
 
 export function businessRate(s, b, t, c = defaultCatalog) {
-    const x = find(c.businesses, b.type);
-
-    let rate = D(x.income)
-        .times(D(1.16).pow(b.level - 1))
-        .times(
-            1 +
-            (b.fleet || 0) * .15 +
-            (b.staff || 0) * .08 +
-            (b.players || 0) * .1
-        );
-
-    if (x.kind === 'bank') {
-        rate = rate
-            .times(Math.max(.1, (b.loan - b.deposit) / 5))
-            .times(1 + (b.vault || 0) * .2);
-    }
-
-    for (const q of s.boosts) {
-        if (
-            active(q, t) &&
-            (q.target === b.id || q.target === 'global')
-        ) {
-            rate = rate.times(q.mult);
-        }
-    }
-
-    return rate;
+    return D(simulateBusiness(s, b, t, c).netProfit);
 }
 
 export function hourlyBreakdown(s, t = s.at, c = defaultCatalog) {
@@ -147,10 +125,17 @@ function finish(s, t, c) {
     for (const b of s.businesses) {
         if (b.job && b.job.end <= t) {
             if (b.job.kind === 'upgrade') {
-                b.level++;
+                const key = b.job.key || 'level';
+                b.upgrades ??= { level: b.level, infra: 1, efficiency: 1 };
+                b.upgrades[key] = (b.upgrades[key] || 1) + 1;
+                if (key === 'level') b.level = b.upgrades.level;
+                if (b.type === 'bank' && key === 'infra') b.vault = b.upgrades.infra - 1;
+                b.history = [{ type: 'upgrade', detail: `${key} Lv ${b.upgrades[key]}`, at: t }, ...(b.history || [])].slice(0, 25);
             } else {
                 s.cash = add(s.cash, b.job.reward);
                 s.earned.project = add(s.earned.project, b.job.reward);
+                b.earned = add(b.earned || '0', b.job.reward);
+                b.history = [{ type: 'project', detail: `Completed (+$${Math.round(Number(b.job.reward)).toLocaleString()})`, at: t }, ...(b.history || [])].slice(0, 25);
             }
 
             b.job = null;
@@ -164,10 +149,10 @@ function finish(s, t, c) {
         ) {
             const x = find(c.businesses, b.type);
             if (b.manager === 'upgrade' && b.level < x.maxLevel) {
-                const cost = D(x.price).times(.4).times(D(1.2).pow(b.level - 1));
-                if (D(s.cash).gte(cost)) {
-                    s.cash = D(s.cash).minus(cost).toString();
-                    b.job = { kind: 'upgrade', end: t + 60000 * b.level };
+                const info = upgradeSpec(x, b, 'level');
+                if (D(s.cash).gte(info.cost)) {
+                    s.cash = D(s.cash).minus(info.cost).toString();
+                    b.job = { kind: 'upgrade', key: 'level', end: t + info.duration };
                 }
             } else if (b.manager === 'project' && ['project', 'sports'].includes(x.kind)) {
                 const cost = D(x.price).times(.2);
@@ -221,8 +206,13 @@ export function settle(state, t, c = defaultCatalog) {
 
         const next = Math.min(...boundaries);
         const dt = next - cursor;
+        let stepBiz = D(0);
+        for (const b of s.businesses) {
+            const bEarn = D(simulateBusiness(s, b, cursor, c).netProfit).times(dt).div(3600000);
+            b.earned = add(b.earned || '0', bEarn);
+            stepBiz = stepBiz.plus(bEarn);
+        }
         const rates = hourlyBreakdown(s, cursor, c);
-        const stepBiz = rates.business.times(dt).div(3600000);
         const stepProp = rates.property.times(dt).div(3600000);
         const stepDiv = rates.dividend.times(dt).div(3600000);
 
@@ -236,6 +226,14 @@ export function settle(state, t, c = defaultCatalog) {
         finish(s, cursor, c);
     }
 
+    for (const b of s.businesses) {
+        const lastAt = b.statsHistory?.[0]?.at ?? -Infinity;
+        if (t - lastAt >= 60000) {
+            const sim = simulateBusiness(s, b, t, c);
+            b.statsHistory = [{ at: t, rev: Number(sim.revenue), exp: Number(sim.expenses), net: Number(sim.netProfit) }, ...(b.statsHistory || [])].slice(0, 24);
+        }
+    }
+
     s.at = t;
 
     s.level = Math.max(
@@ -246,7 +244,7 @@ export function settle(state, t, c = defaultCatalog) {
     return s;
 }
 
-const newBusiness = (type, id, name) => ({
+const newBusiness = (type, id, name) => normalizeBusiness({
     id,
     type,
     name: typeof name === 'string' && name.trim() ? name.trim().slice(0, 32) : undefined,
@@ -255,8 +253,8 @@ const newBusiness = (type, id, name) => ({
     staff: 0,
     players: 0,
     vault: 0,
-    deposit: 3,
-    loan: 8,
+    deposit: 4.5,
+    loan: 10.5,
     manager: null,
     job: null
 });
@@ -387,7 +385,7 @@ export function apply(state, a, t, c = defaultCatalog) {
 
             s.cash = add(
                 s.cash,
-                D(find(c.businesses, b.type).price)
+                D(businessValuation(b, c))
                     .times(.7)
             );
 
@@ -402,28 +400,28 @@ export function apply(state, a, t, c = defaultCatalog) {
             break;
         }
 
-        case 'upgrade': {
+        case 'upgrade':
+        case 'upgradeBiz': {
             if (!b || b.job) {
                 throw Error('Business busy');
             }
 
             const x = find(c.businesses, b.type);
+            const key = a.key || 'level';
+            const info = upgradeSpec(x, b, key);
 
-            if (b.level >= x.maxLevel) {
+            if (info.curLv >= info.spec.max) {
                 throw Error('Maximum level');
             }
 
-            spend(
-                s,
-                D(x.price)
-                    .times(.4)
-                    .times(D(1.2).pow(b.level - 1))
-            );
+            spend(s, info.cost);
 
             b.job = {
                 kind: 'upgrade',
-                end: t + 60000 * b.level
+                key: info.spec.key,
+                end: t + info.duration
             };
+            b.history = [{ type: 'upgrade_start', detail: `Started ${info.spec.name} → Lv ${info.nextLv}`, at: t }, ...(b.history || [])].slice(0, 25);
 
             break;
         }
@@ -446,21 +444,54 @@ export function apply(state, a, t, c = defaultCatalog) {
             }
 
             const x = find(c.businesses, b.type);
-
-            const key = {
+            const m = getBusinessModel(b.type);
+            const key = a.kind || m.extra?.key || {
                 fleet: 'fleet',
                 project: 'staff',
                 sports: 'players',
                 bank: 'vault'
             }[x.kind];
 
-            if (!key) {
+            if (!['fleet', 'staff', 'players', 'vault'].includes(key)) {
                 throw Error('Not available');
             }
 
-            spend(s, D(x.price).times(.15));
+            const pct = key === 'staff' && m.staff ? m.staff.costPct : (m.extra?.costPct ?? 0.15);
+            spend(s, D(x.price).times(pct));
 
-            b[key]++;
+            b[key] = (b[key] || 0) + 1;
+            if (b.type === 'bank' && key === 'vault') {
+                b.upgrades.infra = (b.upgrades.infra || 1) + 1;
+            }
+            b.history = [{ type: 'resource', detail: `Added ${key} (${b[key]})`, at: t }, ...(b.history || [])].slice(0, 25);
+
+            break;
+        }
+
+        case 'manageBiz': {
+            if (!b || !a.settings || typeof a.settings !== 'object') {
+                throw Error('Invalid management settings');
+            }
+            const m = getBusinessModel(b.type);
+            b.settings ??= {};
+            const changed = [];
+            for (const ctrl of m.controls) {
+                if (a.settings[ctrl.key] !== undefined) {
+                    const v = Number(a.settings[ctrl.key]);
+                    if (!Number.isFinite(v) || v < ctrl.min || v > ctrl.max) {
+                        throw Error(`Invalid ${ctrl.label}`);
+                    }
+                    b.settings[ctrl.key] = v;
+                    changed.push(`${ctrl.label}: ${v}${ctrl.unit}`);
+                }
+            }
+            if (b.type === 'bank') {
+                b.deposit = b.settings.deposit;
+                b.loan = b.settings.loan;
+            }
+            if (changed.length) {
+                b.history = [{ type: 'manage', detail: changed.join(', '), at: t }, ...(b.history || [])].slice(0, 25);
+            }
 
             break;
         }
@@ -472,16 +503,19 @@ export function apply(state, a, t, c = defaultCatalog) {
                 !Number.isFinite(a.deposit) ||
                 !Number.isFinite(a.loan) ||
                 a.deposit < 1 ||
-                a.deposit > 10 ||
+                a.deposit > 12 ||
                 a.loan < 2 ||
-                a.loan > 15 ||
-                a.loan <= a.deposit
+                a.loan > 22
             ) {
                 throw Error('Invalid bank rates');
             }
 
             b.deposit = a.deposit;
             b.loan = a.loan;
+            b.settings ??= {};
+            b.settings.deposit = a.deposit;
+            b.settings.loan = a.loan;
+            b.history = [{ type: 'manage', detail: `Deposit ${a.deposit}% / Loan ${a.loan}%`, at: t }, ...(b.history || [])].slice(0, 25);
 
             break;
         }
@@ -718,9 +752,7 @@ export function netWorth(s, c = defaultCatalog) {
     let n = D(s.cash);
 
     for (const b of s.businesses) {
-        n = n.plus(
-            find(c.businesses, b.type).price
-        );
+        n = n.plus(businessValuation(b, c));
     }
 
     for (const x of [...c.stocks, ...c.crypto]) {
