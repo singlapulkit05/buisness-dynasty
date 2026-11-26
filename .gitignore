@@ -1,3 +1,4 @@
 node_modules/
 .env
 client/dist/
+GAME_GUIDE.md
