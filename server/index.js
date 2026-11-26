@@ -886,6 +886,35 @@ app.get(
 );
 
 app.post(
+    '/api/admin/coupons/seed',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        const packs = [
+            { code: 'STARTER50K', title: 'Starter Cash Pack', cash: 50000, extraSlots: 0, grantVip: false, vipDays: null },
+            { code: 'BOOST250K', title: 'Growth Capital Pack', cash: 250000, extraSlots: 1, grantVip: false, vipDays: null },
+            { code: 'VIP7DAYS', title: 'VIP 7-Day Pass', cash: 0, extraSlots: 0, grantVip: true, vipDays: 7 },
+            { code: 'MILLIONAIRE', title: 'Millionaire Pack', cash: 1000000, extraSlots: 1, grantVip: false, vipDays: null },
+            { code: 'VIP30DAYS', title: 'VIP Monthly Pass', cash: 500000, extraSlots: 0, grantVip: true, vipDays: 30 },
+            { code: 'EMPIRE5M', title: 'Tycoon Expansion Pack', cash: 5000000, extraSlots: 2, grantVip: false, vipDays: null },
+            { code: 'MOGUL25M', title: 'Global Mogul Pack', cash: 25000000, extraSlots: 3, grantVip: true, vipDays: 90 },
+            { code: 'BILLIONAIRE', title: 'Billionaire Vault', cash: 1000000000, extraSlots: 5, grantVip: false, vipDays: null },
+            { code: 'DYNASTYLIFE', title: 'Dynasty Lifetime VIP', cash: 100000000, extraSlots: 5, grantVip: true, vipDays: null }
+        ];
+        let added = 0;
+        for (const p of packs) {
+            const r = await Coupon.updateOne(
+                { code: p.code },
+                { $setOnInsert: { ...p, active: true, maxUses: null, uses: 0 } },
+                { upsert: true }
+            );
+            if (r.upsertedCount) added++;
+        }
+        res.json({ ok: true, added, total: packs.length });
+    })
+);
+
+app.post(
     '/api/admin/coupons',
     auth,
     admin,
