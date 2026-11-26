@@ -15,7 +15,8 @@ import {
     initial,
     apply,
     settle,
-    normalizeState
+    normalizeState,
+    netWorth
 } from '../shared/engine.js';
 
 import { catalog } from '../shared/catalog.js';
@@ -963,6 +964,40 @@ app.delete(
     wrap(async (req, res) => {
         await Coupon.deleteOne({ _id: req.params.id });
         res.json({ ok: true });
+    })
+);
+
+app.get(
+    '/api/leaderboard',
+    auth,
+    wrap(async (req, res) => {
+        const players = await User.find(
+            { role: { $ne: 'admin' }, state: { $exists: true } },
+            'username state premium premiumUntil'
+        ).lean();
+        const now = Date.now();
+        const rows = players
+            .map(u => {
+                try {
+                    const st = normalizeState(u.state);
+                    const nw = Number(netWorth(st, catalog));
+                    const isPrem = !!u.premium && (!u.premiumUntil || new Date(u.premiumUntil).getTime() > now);
+                    return {
+                        username: u.username,
+                        level: st.level || 1,
+                        netWorth: nw,
+                        businesses: (st.businesses || []).length,
+                        achievements: (st.achievements || []).length,
+                        premium: isPrem
+                    };
+                } catch {
+                    return null;
+                }
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.netWorth - a.netWorth)
+            .slice(0, 25);
+        res.json(rows);
     })
 );
 

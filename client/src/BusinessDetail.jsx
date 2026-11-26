@@ -4,6 +4,7 @@ import { money } from '../../shared/format.js';
 import { getBusinessModel } from '../../shared/business-models.js';
 import { simulateBusiness, predictBusiness, previewUpgrade, businessValuation } from '../../shared/business-sim.js';
 import { SUPPLY_CHAINS, activeContractsFor } from '../../shared/supply-chain.js';
+import { WORLD_REGIONS } from '../../shared/engagement.js';
 
 const dur = ms => {
   const n = Math.max(0, Math.ceil(ms / 1000));
@@ -22,9 +23,13 @@ export default function BusinessDetail({ s, b, x, c, bizColor, onBack, act, rewa
   const [sub, setSub] = useState('overview');
   const m = getBusinessModel(b.type);
   const [draft, setDraft] = useState(() => ({ ...b.settings }));
+  const [brandName, setBrandName] = useState(b.name || x.name);
+  const [brandColor, setBrandColor] = useState(b.color || bizColor);
 
   useEffect(() => {
     setDraft({ ...b.settings });
+    setBrandName(b.name || x.name);
+    setBrandColor(b.color || bizColor);
   }, [b.id]);
 
   const sim = simulateBusiness(s, b, s.at, c);
@@ -51,7 +56,7 @@ export default function BusinessDetail({ s, b, x, c, bizColor, onBack, act, rewa
       </div>
 
       <section className="company-hero">
-        <div className="biz-circle lg" style={{ background: bizColor }}><GameArt id={x.id} /></div>
+        <div className="biz-circle lg" style={{ background: b.color || bizColor }}><GameArt id={x.id} /></div>
         <h2>{b.name || x.name}</h2>
         <p className="muted" style={{ margin: '2px 0 8px' }}>{x.name} · {m.subtitle}</p>
         <div className="company-income-box">
@@ -106,6 +111,39 @@ export default function BusinessDetail({ s, b, x, c, bizColor, onBack, act, rewa
             <button className="btn-danger" onClick={() => { if (confirm(`Sell ${b.name || x.name} for ${money(Number(val) * 0.7)}?`)) { act({ type: 'sellBusiness', target: b.id }); onBack(); } }}>
               Sell business · {money(Number(val) * 0.7)}
             </button>
+          </section>
+
+          <section>
+            <span className="eyebrow">BUSINESS BRANDING</span>
+            <h3>Name &amp; Identity</h3>
+            <div className="bank-grid">
+              <label>Display Name<input maxLength={32} value={brandName} onChange={e => setBrandName(e.target.value)} /></label>
+              <label>Brand Color<input type="color" value={brandColor} onChange={e => setBrandColor(e.target.value)} style={{ height: 42, padding: 4 }} /></label>
+            </div>
+            <button className="secondary" style={{ marginTop: 8 }} onClick={() => act({ type: 'brandBusiness', target: b.id, name: brandName, color: brandColor })}>Save Branding</button>
+          </section>
+
+          <section>
+            <span className="eyebrow">WORLDWIDE EXPANSION</span>
+            <h3>Global Branches</h3>
+            <p className="muted">Open regional branches to expand demand and revenue in global hubs.</p>
+            {WORLD_REGIONS.map(reg => {
+              const opened = (b.branches || []).includes(reg.id);
+              const cost = x.price * reg.costMult;
+              return (
+                <div key={reg.id} className="profile-kv" style={{ alignItems: 'center' }}>
+                  <div>
+                    <strong>{reg.name}</strong>
+                    <div className="muted" style={{ fontSize: 12 }}>+{Math.round((reg.revMult - 1) * 100)}% rev · {reg.expMult >= 1 ? '+' : ''}{Math.round((reg.expMult - 1) * 100)}% exp · {reg.desc}</div>
+                  </div>
+                  {opened ? <span className="badge-premium">OPEN</span> : (
+                    <button className="small" disabled={Number(s.cash) < cost} onClick={() => act({ type: 'openBranch', target: b.id, region: reg.id })}>
+                      Open · {money(cost)}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </section>
         </>
       )}

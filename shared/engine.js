@@ -5,6 +5,7 @@ import { getBusinessModel } from './business-models.js';
 import { normalizeBusiness, simulateBusiness, upgradeSpec, businessValuation } from './business-sim.js';
 import { currentEconomyEvent } from './economy-events.js';
 import { getChain, MAX_SUPPLIER_CONTRACTS } from './supply-chain.js';
+import { RESEARCH_NODES, WORLD_REGIONS, ACHIEVEMENTS, evaluateAchievements } from './engagement.js';
 
 Decimal.set({ precision: 40 });
 
@@ -31,6 +32,9 @@ export function initial(now = Date.now(), c = defaultCatalog) {
         storage: { ...(c.startingStorage || { garage: 4, hangar: 2, marina: 2 }) },
         banking: { savings: '0', loans: [], creditScore: 680, repaidCount: 0 },
         merger: null,
+        research: { completed: [], active: null },
+        achievements: [],
+        notifications: [],
         tickets: 0,
         history: [],
         ledger: [],
@@ -63,6 +67,11 @@ export function normalizeState(state) {
     s.watchlist ??= [];
     s.orders ??= [];
     s.contracts ??= [];
+    s.research ??= { completed: [], active: null };
+    s.research.completed ??= [];
+    s.research.active ??= null;
+    s.achievements ??= [];
+    s.notifications ??= [];
     s.banking ??= { savings: '0', loans: [], creditScore: 680, repaidCount: 0 };
     s.banking.savings ??= '0';
     s.banking.loans ??= [];
@@ -146,6 +155,10 @@ export function hourly(s, t = s.at, c = defaultCatalog) {
     return business.plus(property).plus(dividend).toString();
 }
 
+const pushNotif = (s, type, title, detail, t) => {
+    s.notifications = [{ id: `${type}-${t}-${(s.notifications || []).length}`, type, title, detail, at: t, read: false }, ...(s.notifications || [])].slice(0, 50);
+};
+
 function finish(s, t, c) {
     if (s.pending && s.pending.end <= t) {
         const p = s.pending;
@@ -211,7 +224,18 @@ function finish(s, t, c) {
         );
 
         s.businesses.push(newBusiness(m.type, m.id));
+        pushNotif(s, 'merger', 'Merger Completed', `${m.name || m.id} is now operational.`, t);
         s.merger = null;
+    }
+
+    if (s.research?.active && s.research.active.end <= t) {
+        const nodeId = s.research.active.id;
+        if (!s.research.completed.includes(nodeId)) {
+            s.research.completed.push(nodeId);
+        }
+        const node = RESEARCH_NODES.find(n => n.id === nodeId);
+        pushNotif(s, 'research', 'Research Complete', `${node?.name || nodeId} unlocked across your empire.`, t);
+        s.research.active = null;
     }
 
     s.boosts = s.boosts.filter(b => b.end > t);
@@ -280,6 +304,7 @@ export function settle(state, t, c = defaultCatalog) {
             ...s.businesses.map(b => b.job?.end),
             s.slotJob,
             s.merger?.end,
+            s.research?.active?.end,
             s.pending?.end
         ].filter(x => x > cursor);
 
@@ -295,9 +320,10 @@ export function settle(state, t, c = defaultCatalog) {
         const stepProp = rates.property.times(dt).div(3600000);
         const stepDiv = rates.dividend.times(dt).div(3600000);
 
-        // Personal savings interest (4% APY) & loan interest accrual
+        // Personal savings interest (4% APY, +0.5% with FinTech Core) & loan interest accrual
         if (D(s.banking.savings).gt(0)) {
-            const savInt = D(s.banking.savings).times(0.04 / 8760).times(dt).div(3600000);
+            const apy = (s.research?.completed || []).includes('fintech') ? 0.045 : 0.04;
+            const savInt = D(s.banking.savings).times(apy / 8760).times(dt).div(3600000);
             s.banking.savings = add(s.banking.savings, savInt);
         }
         for (const ln of s.banking.loans) {
@@ -993,6 +1019,63 @@ export function apply(state, a, t, c = defaultCatalog) {
             const finalCost = cost.lt(500) ? D(500) : cost;
             spend(s, finalCost);
             s.propState[p.id] = { rentMult: cur.rentMult ?? 1, condition: 100 };
+            break;
+        }
+
+        case 'startResearch': {
+            if (s.research?.active) throw Error('Research already in progress');
+            const node = RESEARCH_NODES.find(n => n.id === a.item);
+            if (!node) throw Error('Unknown research node');
+            if ((s.research?.completed || []).includes(node.id)) throw Error('Already researched');
+            for (const req of node.requires) {
+                if (!(s.research?.completed || []).includes(req)) throw Error(`Requires ${req} first`);
+            }
+            spend(s, node.cost);
+            s.research.active = { id: node.id, start: t, end: t + node.duration };
+            break;
+        }
+
+        case 'openBranch': {
+            if (!b) throw Error('Business not found');
+            const reg = WORLD_REGIONS.find(r => r.id === a.region);
+            if (!reg) throw Error('Unknown region');
+            b.branches ??= [];
+            if (b.branches.includes(reg.id)) throw Error('Branch already open in this city');
+            const x = find(c.businesses, b.type);
+            spend(s, D(x.price).times(reg.costMult));
+            b.branches.push(reg.id);
+            b.history = [{ type: 'branch', detail: `Opened ${reg.name} branch`, at: t }, ...(b.history || [])].slice(0, 25);
+            pushNotif(s, 'branch', 'Global Expansion', `${b.name || x.name} opened a branch in ${reg.name}.`, t);
+            break;
+        }
+
+        case 'brandBusiness': {
+            if (!b) throw Error('Business not found');
+            if (typeof a.name === 'string') {
+                const trimmed = a.name.trim().slice(0, 32);
+                if (trimmed) b.name = trimmed;
+            }
+            if (typeof a.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(a.color)) {
+                b.color = a.color;
+            }
+            break;
+        }
+
+        case 'claimAchievement': {
+            const ach = ACHIEVEMENTS.find(x => x.id === a.item);
+            if (!ach) throw Error('Unknown achievement');
+            if ((s.achievements || []).includes(ach.id)) throw Error('Achievement already claimed');
+            const evalList = evaluateAchievements(s, c, Number(netWorth(s, c)));
+            const status = evalList.find(x => x.id === ach.id);
+            if (!status?.done) throw Error('Achievement requirements not yet met');
+            s.achievements.push(ach.id);
+            s.cash = add(s.cash, ach.rewardCash);
+            pushNotif(s, 'achievement', 'Achievement Claimed', `${ach.title} (+$${ach.rewardCash.toLocaleString()})`, t);
+            break;
+        }
+
+        case 'markNotifsRead': {
+            s.notifications = (s.notifications || []).map(n => ({ ...n, read: true }));
             break;
         }
 

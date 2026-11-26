@@ -2,6 +2,7 @@ import Decimal from 'decimal.js';
 import { getBusinessModel } from './business-models.js';
 import { currentEconomyEvent } from './economy-events.js';
 import { contractModifiers } from './supply-chain.js';
+import { researchModifiers, branchModifiers, sectorCompetition } from './engagement.js';
 
 const D = x => new Decimal(x ?? 0);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -17,6 +18,7 @@ export function normalizeBusiness(b) {
   out.earned = out.earned ?? '0';
   out.history = [...(out.history || [])];
   out.statsHistory = [...(out.statsHistory || [])];
+  out.branches = [...(out.branches || [])];
   out.upgrades = { level: out.level, infra: 1, efficiency: 1, ...(out.upgrades || {}) };
   out.upgrades.level = out.level;
   if (b.type === 'bank' && out.vault > 0 && out.upgrades.infra === 1) {
@@ -247,6 +249,11 @@ export function simulateBusiness(s, rawBiz, t, c) {
   if (sc.asBuyer + sc.asSupplier > 0) {
     sim.metrics['Supply Contracts'] = `${sc.asBuyer} in · ${sc.asSupplier} out`;
   }
+  const rm = researchModifiers(s);
+  const bm = branchModifiers(b);
+  if (bm.count > 0) sim.metrics['Global Branches'] = `${bm.count} cities`;
+  const comp = sectorCompetition(b.type, t);
+  sim.metrics['AI Rival'] = `${comp.rivalName} (${comp.rivalShare}% share)`;
 
   // Boosters multiply REVENUE only (never expenses or losses)
   let boostMult = D(1);
@@ -256,8 +263,8 @@ export function simulateBusiness(s, rawBiz, t, c) {
     }
   }
 
-  const revenue = sim.revenue.times(sectorRevMult * sc.revMult).times(boostMult);
-  const expenses = sim.expenses.times(sectorExpMult * sc.expMult);
+  const revenue = sim.revenue.times(sectorRevMult * sc.revMult * rm.revMult * bm.revMult * comp.demandMult).times(boostMult);
+  const expenses = sim.expenses.times(sectorExpMult * sc.expMult * rm.expMult * bm.expMult);
   const netProfit = revenue.minus(expenses);
   const margin = revenue.gt(0) ? netProfit.div(revenue).times(100).toNumber() : 0;
 
