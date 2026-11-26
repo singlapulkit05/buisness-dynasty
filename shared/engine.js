@@ -1,9 +1,10 @@
 
 import Decimal from 'decimal.js';
-import { catalog as defaultCatalog } from './catalog.js';
+import { catalog as defaultCatalog, stockTotalShares, getOwnershipTier } from './catalog.js';
 import { getBusinessModel } from './business-models.js';
 import { normalizeBusiness, simulateBusiness, upgradeSpec, businessValuation } from './business-sim.js';
 import { currentEconomyEvent } from './economy-events.js';
+import { getChain, MAX_SUPPLIER_CONTRACTS } from './supply-chain.js';
 
 Decimal.set({ precision: 40 });
 
@@ -19,7 +20,9 @@ export function initial(now = Date.now(), c = defaultCatalog) {
         costBasis: {},
         watchlist: [],
         orders: [],
+        contracts: [],
         properties: {},
+        propState: {},
         assets: {},
         boosts: [],
         pending: null,
@@ -42,7 +45,7 @@ export function initial(now = Date.now(), c = defaultCatalog) {
 export function normalizeState(state) {
     const s = structuredClone(state);
 
-    for (const key of ["holdings", "costBasis", "properties", "assets"]) {
+    for (const key of ["holdings", "costBasis", "properties", "propState", "assets"]) {
         s[key] ??= {};
     }
 
@@ -59,6 +62,7 @@ export function normalizeState(state) {
     s.ledger ??= [];
     s.watchlist ??= [];
     s.orders ??= [];
+    s.contracts ??= [];
     s.banking ??= { savings: '0', loans: [], creditScore: 680, repaidCount: 0 };
     s.banking.savings ??= '0';
     s.banking.loans ??= [];
@@ -97,6 +101,16 @@ export function price(item, t) {
         .toString();
 }
 
+export function propertyMetrics(p, qty, rawState, t) {
+    const ps = rawState || {};
+    const rentMult = Math.max(0.6, Math.min(1.8, Number(ps.rentMult ?? 1)));
+    const condition = Math.max(20, Math.min(100, Number(ps.condition ?? 100)));
+    const occupancy = Math.max(0.25, Math.min(1, 1.08 - (rentMult - 0.85) * 0.55 - (100 - condition) * 0.004));
+    const evPropMult = currentEconomyEvent(t).mods.property;
+    const netIncome = D(p.income).times(qty).times(rentMult).times(occupancy).times(evPropMult);
+    return { rentMult, condition, occupancy, netIncome };
+}
+
 export function businessRate(s, b, t, c = defaultCatalog) {
     return D(simulateBusiness(s, b, t, c).netProfit);
 }
@@ -108,17 +122,20 @@ export function hourlyBreakdown(s, t = s.at, c = defaultCatalog) {
         business = business.plus(businessRate(s, b, t, c));
     }
 
-    const evPropMult = currentEconomyEvent(t).mods.property;
     for (const p of c.properties) {
-        property = property.plus(
-            D(p.income).times(s.properties?.[p.id] || 0).times(evPropMult)
-        );
+        const qty = s.properties?.[p.id] || 0;
+        if (qty > 0) {
+            property = property.plus(propertyMetrics(p, qty, s.propState?.[p.id], t).netIncome);
+        }
     }
 
     for (const p of c.stocks) {
-        dividend = dividend.plus(
-            D(p.dividend).times(s.holdings?.[p.id] || 0)
-        );
+        const qty = s.holdings?.[p.id] || 0;
+        if (qty > 0) {
+            const pct = (qty / stockTotalShares(p)) * 100;
+            const bonus = 1 + getOwnershipTier(pct).divBonus;
+            dividend = dividend.plus(D(p.dividend).times(qty).times(bonus));
+        }
     }
 
     return { business, property, dividend };
@@ -188,6 +205,9 @@ function finish(s, t, c) {
 
         s.businesses = s.businesses.filter(
             b => !m.inputs.includes(b.id)
+        );
+        s.contracts = (s.contracts || []).filter(
+            ct => !m.inputs.includes(ct.supplierId) && !m.inputs.includes(ct.buyerId)
         );
 
         s.businesses.push(newBusiness(m.type, m.id));
@@ -293,6 +313,19 @@ export function settle(state, t, c = defaultCatalog) {
         s.cash = add(s.cash, stepBiz.plus(stepProp).plus(stepDiv));
 
         cursor = next;
+
+        if (next === nextHour) {
+            for (const [pid, qty] of Object.entries(s.properties || {})) {
+                if (qty > 0) {
+                    const cur = s.propState[pid] || { rentMult: 1, condition: 100 };
+                    const wear = cur.rentMult > 1.2 ? 0.35 : 0.25;
+                    s.propState[pid] = {
+                        rentMult: cur.rentMult ?? 1,
+                        condition: Math.max(20, Number(((cur.condition ?? 100) - wear).toFixed(2)))
+                    };
+                }
+            }
+        }
 
         finish(s, cursor, c);
     }
@@ -467,6 +500,10 @@ export function apply(state, a, t, c = defaultCatalog) {
 
             s.boosts = s.boosts.filter(
                 x => x.target !== b.id
+            );
+
+            s.contracts = (s.contracts || []).filter(
+                ct => ct.supplierId !== b.id && ct.buyerId !== b.id
             );
 
             break;
@@ -694,6 +731,14 @@ export function apply(state, a, t, c = defaultCatalog) {
 
                 s.cash = add(s.cash, D(p).times(qty));
             } else {
+                if (a.category === 'stocks') {
+                    const total = stockTotalShares(x);
+                    const reservedBuy = (s.orders || []).filter(o => o.item === x.id && o.side === 'buy').reduce((sum, o) => sum + o.qty, 0);
+                    if (n + reservedBuy + qty > total) {
+                        throw Error(`Only ${Math.max(0, total - n - reservedBuy)} shares available`);
+                    }
+                }
+
                 if (a.category === 'assets' && n + qty > 1) {
                     throw Error('You can only own 1 of each asset');
                 }
@@ -869,6 +914,14 @@ export function apply(state, a, t, c = defaultCatalog) {
             }
             if (s.orders.length >= 20) throw Error('Maximum 20 open orders');
             if (a.side === 'buy') {
+                if (a.category === 'stocks') {
+                    const total = stockTotalShares(item);
+                    const owned = s.holdings[item.id] || 0;
+                    const reservedBuy = (s.orders || []).filter(o => o.item === item.id && o.side === 'buy').reduce((sum, o) => sum + o.qty, 0);
+                    if (owned + reservedBuy + qty > total) {
+                        throw Error(`Exceeds available share supply (${total})`);
+                    }
+                }
                 spend(s, targetP.times(qty));
             } else {
                 const owned = s.holdings[item.id] || 0;
@@ -890,6 +943,56 @@ export function apply(state, a, t, c = defaultCatalog) {
                 s.holdings[ord.item] = (s.holdings[ord.item] || 0) + ord.qty;
             }
             s.orders = s.orders.filter(o => o.id !== ord.id);
+            break;
+        }
+
+        case 'signContract': {
+            const ch = getChain(a.chainId);
+            if (!ch) throw Error('Unknown supply chain');
+            const sup = s.businesses.find(x => x.id === a.supplierId);
+            const buy = s.businesses.find(x => x.id === a.buyerId);
+            if (!sup || !buy || sup.id === buy.id) throw Error('Select two different owned businesses');
+            if (!ch.suppliers.includes(sup.type) || !ch.buyers.includes(buy.type)) {
+                throw Error('Businesses incompatible for this contract');
+            }
+            const supCount = (s.contracts || []).filter(ct => ct.supplierId === sup.id).length;
+            if (supCount >= MAX_SUPPLIER_CONTRACTS) {
+                throw Error(`Supplier already has max ${MAX_SUPPLIER_CONTRACTS} active contracts`);
+            }
+            const dup = (s.contracts || []).some(ct => ct.chainId === ch.id && ct.buyerId === buy.id);
+            if (dup) throw Error('Buyer already has an active contract in this chain');
+            s.contracts.push({ id: a.id, chainId: ch.id, supplierId: sup.id, buyerId: buy.id, at: t });
+            break;
+        }
+
+        case 'cancelContract': {
+            const exists = (s.contracts || []).some(ct => ct.id === a.target);
+            if (!exists) throw Error('Contract not found');
+            s.contracts = s.contracts.filter(ct => ct.id !== a.target);
+            break;
+        }
+
+        case 'setPropertyRent': {
+            const p = find(c.properties, a.item);
+            if ((s.properties?.[p.id] || 0) <= 0) throw Error('Property not owned');
+            const rm = Number(a.rentMult);
+            if (!Number.isFinite(rm) || rm < 0.6 || rm > 1.8) throw Error('Rent multiplier must be 0.6x–1.8x');
+            const cur = s.propState[p.id] || { rentMult: 1, condition: 100 };
+            s.propState[p.id] = { ...cur, rentMult: Number(rm.toFixed(2)) };
+            break;
+        }
+
+        case 'renovateProperty': {
+            const p = find(c.properties, a.item);
+            const qty = s.properties?.[p.id] || 0;
+            if (qty <= 0) throw Error('Property not owned');
+            const cur = s.propState[p.id] || { rentMult: 1, condition: 100 };
+            const cond = Number(cur.condition ?? 100);
+            if (cond >= 100) throw Error('Property already in 100% condition');
+            const cost = D(p.price).times(qty).times(0.05).times((100 - cond) / 100).toDecimalPlaces(2);
+            const finalCost = cost.lt(500) ? D(500) : cost;
+            spend(s, finalCost);
+            s.propState[p.id] = { rentMult: cur.rentMult ?? 1, condition: 100 };
             break;
         }
 
@@ -949,7 +1052,11 @@ export function financialStatement(state, c = defaultCatalog) {
         const qty = s.holdings?.[x.id] || 0;
         if (qty > 0) {
             investVal = investVal.plus(D(price(x, s.at)).times(qty));
-            if (x.dividend) divRev = divRev.plus(D(x.dividend).times(qty));
+            if (x.dividend) {
+                const pct = (qty / stockTotalShares(x)) * 100;
+                const bonus = 1 + getOwnershipTier(pct).divBonus;
+                divRev = divRev.plus(D(x.dividend).times(qty).times(bonus));
+            }
         }
     }
 
@@ -958,7 +1065,7 @@ export function financialStatement(state, c = defaultCatalog) {
         const qty = s.properties?.[p.id] || 0;
         if (qty > 0) {
             propVal = propVal.plus(D(p.price).times(qty));
-            propRev = propRev.plus(D(p.income).times(qty));
+            propRev = propRev.plus(propertyMetrics(p, qty, s.propState?.[p.id], s.at).netIncome);
         }
     }
 

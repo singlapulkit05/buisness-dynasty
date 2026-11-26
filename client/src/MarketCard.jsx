@@ -2,6 +2,7 @@ import GameArt from './GameArt.jsx';
 import React,{useState,useId} from 'react';
 import Decimal from 'decimal.js';
 import {price} from '../../shared/engine.js';
+import {stockTotalShares,getOwnershipTier} from '../../shared/catalog.js';
 import {money} from '../../shared/format.js';
 const ranges={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760};
 export default function MarketCard({item,category,owned,costBasis,watched,orders,at,cash,act}){
@@ -13,7 +14,12 @@ export default function MarketCard({item,category,owned,costBasis,watched,orders
  const X=i=>8+i/count*254,Y=v=>12+(hi-v)/(hi-lo)*112;
  const line=points.map((p,i)=>`${i?'L':'M'}${X(i).toFixed(2)},${Y(p.v).toFixed(2)}`).join(' ');
  const selected=points[hover??count]||points[count];
- const limit=side==='buy'?Math.max(0,Math.min(1000000,Number(new Decimal(cash).div(current).floor()))):Math.min(1000000,owned);
+ const totalShares=category==='stocks'?stockTotalShares(item):null;
+ const reservedShares=(orders||[]).filter(o=>o.side==='buy').reduce((sum,o)=>sum+o.qty,0);
+ const maxAvailable=totalShares!==null?Math.max(0,totalShares-owned-reservedShares):1000000;
+ const ownPct=totalShares?((owned/totalShares)*100):0;
+ const tier=totalShares?getOwnershipTier(ownPct):null;
+ const limit=side==='buy'?Math.max(0,Math.min(maxAvailable,Number(new Decimal(cash).div(current).floor()))):Math.min(1000000,owned);
  const effectiveQty=mode==='qty'?(/^\d+$/.test(qty)?Number(qty):0):(Number(usd)>0?Math.min(1000000,Math.floor(Number(usd)/current)):0);
  const valid=effectiveQty>0&&effectiveQty<=1000000&&effectiveQty<=limit;
  const total=new Decimal(current).times(effectiveQty);
@@ -30,6 +36,12 @@ export default function MarketCard({item,category,owned,costBasis,watched,orders
  <line x1={X(hover??count)} x2={X(hover??count)} y1="12" y2="124" stroke={color} strokeDasharray="3 3"/><circle cx={X(hover??count)} cy={Y(selected.v)} r="3" fill={color}/>
  {[0,.5,1].map((f,i)=><text key={i} x={8+254*f} y="145" textAnchor={i===0?'start':i===2?'end':'middle'} fontSize="9" fill="#64748b">{new Date(points[Math.round(count*f)].t).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</text>)}
  </svg><p className="muted">Simulated market · hourly price changes {item.dividend?' · Dividend '+money(item.dividend)+'/hr per share':''}</p>
+ {tier&&<div style={{margin:'8px 0 12px',padding:'10px 12px',background:'#f8fafc',borderRadius:10,border:'1px solid #e2e8f0'}}>
+   <div className="line"><span className="eyebrow">OWNERSHIP &amp; ACQUISITION</span><span className="tag">{tier.tier}</span></div>
+   <div className="profile-kv"><span>Equity Stake</span><strong>{owned.toLocaleString()} / {totalShares.toLocaleString()} ({ownPct.toFixed(2)}%)</strong></div>
+   {tier.divBonus>0&&<div className="profile-kv"><span>Control Dividend Bonus</span><strong className="green">+{(tier.divBonus*100).toFixed(0)}%</strong></div>}
+   {tier.next&&<progress max={tier.next} value={Math.min(tier.next,ownPct)} style={{width:'100%',marginTop:4}}/>}
+ </div>}
  <div className="trade-tabs"><button className={side==='buy'?'active':''} onClick={()=>{S('buy');Q('1')}}>Buy</button><button className={side==='sell'?'active':''} onClick={()=>{S('sell');Q('1')}}>Sell</button></div>
  <div className="trade-tabs"><button className={orderKind==='market'?'active':''} onClick={()=>K('market')}>Market</button><button className={orderKind==='limit'?'active':''} onClick={()=>{K('limit');TP(String(current))}}>Limit</button><button className={orderKind==='stop'?'active':''} onClick={()=>{K('stop');TP(String(current))}}>Stop</button></div>
  {orderKind!=='market'&&<label>Target Price ($)<input type="number" min="0.01" step="any" value={targetP} onChange={e=>TP(e.target.value)}/></label>}

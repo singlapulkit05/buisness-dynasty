@@ -3,6 +3,7 @@ import GameArt from './GameArt.jsx';
 import { money } from '../../shared/format.js';
 import { getBusinessModel } from '../../shared/business-models.js';
 import { simulateBusiness, predictBusiness, previewUpgrade, businessValuation } from '../../shared/business-sim.js';
+import { SUPPLY_CHAINS, activeContractsFor } from '../../shared/supply-chain.js';
 
 const dur = ms => {
   const n = Math.max(0, Math.ceil(ms / 1000));
@@ -154,6 +155,61 @@ export default function BusinessDetail({ s, b, x, c, bizColor, onBack, act, rewa
               <button disabled={!hasChanges} onClick={() => act({ type: 'manageBiz', target: b.id, settings: draft })}>Apply Changes</button>
               {hasChanges && <button className="secondary" onClick={() => setDraft({ ...b.settings })}>Reset</button>}
             </div>
+          </section>
+
+          <section>
+            <span className="eyebrow">SUPPLY CHAINS &amp; CONTRACTS</span>
+            <h3>Intercompany Network</h3>
+            {(() => {
+              const allActive = activeContractsFor(s);
+              const mine = allActive.filter(ct => ct.supplierId === b.id || ct.buyerId === b.id);
+              const options = [];
+              for (const ch of SUPPLY_CHAINS) {
+                if (ch.buyers.includes(b.type) && !allActive.some(ct => ct.chainId === ch.id && ct.buyerId === b.id)) {
+                  for (const partner of s.businesses.filter(p => p.id !== b.id && ch.suppliers.includes(p.type))) {
+                    options.push({ key: `${ch.id}-buy-${partner.id}`, chainId: ch.id, supplierId: partner.id, buyerId: b.id, label: `Buy from ${partner.name || partner.type} (${ch.name})`, desc: ch.buyerDesc });
+                  }
+                }
+                if (ch.suppliers.includes(b.type)) {
+                  for (const partner of s.businesses.filter(p => p.id !== b.id && ch.buyers.includes(p.type) && !allActive.some(ct => ct.chainId === ch.id && ct.buyerId === p.id))) {
+                    options.push({ key: `${ch.id}-sup-${partner.id}`, chainId: ch.id, supplierId: b.id, buyerId: partner.id, label: `Supply to ${partner.name || partner.type} (${ch.name})`, desc: ch.supplierDesc });
+                  }
+                }
+              }
+              return (
+                <>
+                  {mine.length === 0 && <p className="muted">No active supply contracts for this company.</p>}
+                  {mine.map(ct => {
+                    const ch = SUPPLY_CHAINS.find(k => k.id === ct.chainId);
+                    const isBuyer = ct.buyerId === b.id;
+                    const partner = s.businesses.find(p => p.id === (isBuyer ? ct.supplierId : ct.buyerId));
+                    return (
+                      <div key={ct.id} className="profile-kv" style={{ alignItems: 'center' }}>
+                        <div>
+                          <strong>{ch?.name || ct.chainId}</strong>
+                          <div className="muted" style={{ fontSize: 12 }}>{isBuyer ? 'From' : 'To'} {partner?.name || partner?.type} · {isBuyer ? ch?.buyerDesc : ch?.supplierDesc}</div>
+                        </div>
+                        <button className="secondary small" onClick={() => act({ type: 'cancelContract', target: ct.id })}>End</button>
+                      </div>
+                    );
+                  })}
+                  {options.length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <span className="eyebrow">AVAILABLE PARTNERS</span>
+                      {options.map(opt => (
+                        <div key={opt.key} className="profile-kv" style={{ alignItems: 'center' }}>
+                          <div>
+                            <strong>{opt.label}</strong>
+                            <div className="muted" style={{ fontSize: 12 }}>{opt.desc}</div>
+                          </div>
+                          <button className="small" onClick={() => act({ type: 'signContract', chainId: opt.chainId, supplierId: opt.supplierId, buyerId: opt.buyerId })}>Sign</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </section>
         </>
       )}

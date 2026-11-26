@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js';
 import { getBusinessModel } from './business-models.js';
 import { currentEconomyEvent } from './economy-events.js';
+import { contractModifiers } from './supply-chain.js';
 
 const D = x => new Decimal(x ?? 0);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -242,6 +243,11 @@ export function simulateBusiness(s, rawBiz, t, c) {
   if (b.type === 'construction') sectorRevMult *= ev.mods.construction;
   if (m.kind === 'fleet') sectorExpMult *= ev.mods.fleetExp;
 
+  const sc = contractModifiers(s, b.id);
+  if (sc.asBuyer + sc.asSupplier > 0) {
+    sim.metrics['Supply Contracts'] = `${sc.asBuyer} in · ${sc.asSupplier} out`;
+  }
+
   // Boosters multiply REVENUE only (never expenses or losses)
   let boostMult = D(1);
   for (const q of (s.boosts || [])) {
@@ -250,8 +256,8 @@ export function simulateBusiness(s, rawBiz, t, c) {
     }
   }
 
-  const revenue = sim.revenue.times(sectorRevMult).times(boostMult);
-  const expenses = sim.expenses.times(sectorExpMult);
+  const revenue = sim.revenue.times(sectorRevMult * sc.revMult).times(boostMult);
+  const expenses = sim.expenses.times(sectorExpMult * sc.expMult);
   const netProfit = revenue.minus(expenses);
   const margin = revenue.gt(0) ? netProfit.div(revenue).times(100).toNumber() : 0;
 

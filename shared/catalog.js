@@ -27,3 +27,17 @@ export const catalog = {
 for (const key of ['properties','assets']) {
   catalog[key] = [...catalog[key].map(x=>({...x,legacy:true})), ...wikiAssets.filter(x=>key==='properties'?x.category==='properties':x.category!=='properties')];
 }
+
+export function stockTotalShares(item) {
+  if (!item) return 100000;
+  if (item.totalShares) return item.totalShares;
+  return Math.max(10000, Math.round(10000000 / Math.max(5, Number(item.price || 10))));
+}
+
+export function getOwnershipTier(pct) {
+  if (pct >= 100) return { tier: 'Wholly Owned Subsidiary', badge: '100% SUBSIDIARY', divBonus: 0.40, next: null };
+  if (pct >= 51) return { tier: 'Controlling Stake', badge: '51% CONTROL', divBonus: 0.25, next: 100 };
+  if (pct >= 25) return { tier: 'Major Shareholder', badge: '25% MAJOR', divBonus: 0.12, next: 51 };
+  if (pct >= 10) return { tier: 'Minority Stake', badge: '10% MINORITY', divBonus: 0.05, next: 25 };
+  return { tier: 'Public Investor', badge: null, divBonus: 0, next: 10 };
+}
