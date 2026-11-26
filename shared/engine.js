@@ -9,6 +9,16 @@ import { RESEARCH_NODES, WORLD_REGIONS, ACHIEVEMENTS, evaluateAchievements } fro
 
 Decimal.set({ precision: 40 });
 
+export const FINANCIAL_TIME = {
+    REAL_SECONDS_PER_FINANCIAL_YEAR: 86400, // 24 real-world hours = 1 financial game year (360 days)
+    FINANCIAL_DAYS_PER_YEAR: 360,
+    TIME_SCALE: 360 // 1 real second = 6 financial minutes
+};
+
+export function savingsApy(s) {
+    return (s.research?.completed || []).includes('fintech') ? 4.5 : 4.0;
+}
+
 const D = x => new Decimal(x);
 const add = (a, b) => D(a).plus(b).toString();
 
@@ -30,7 +40,7 @@ export function initial(now = Date.now(), c = defaultCatalog) {
         slots: c.startingSlots,
         slotJob: null,
         storage: { ...(c.startingStorage || { garage: 4, hangar: 2, marina: 2 }) },
-        banking: { savings: '0', loans: [], creditScore: 680, repaidCount: 0 },
+        banking: { savings: '0', loans: [], creditScore: 680, repaidCount: 0, interestEarned: '0', interestPaid: '0', lastScoreBoostAt: null },
         merger: null,
         research: { completed: [], active: null },
         achievements: [],
@@ -72,11 +82,19 @@ export function normalizeState(state) {
     s.research.active ??= null;
     s.achievements ??= [];
     s.notifications ??= [];
-    s.banking ??= { savings: '0', loans: [], creditScore: 680, repaidCount: 0 };
+    s.banking ??= { savings: '0', loans: [], creditScore: 680, repaidCount: 0, interestEarned: '0', interestPaid: '0', lastScoreBoostAt: null };
     s.banking.savings ??= '0';
-    s.banking.loans ??= [];
+    s.banking.loans = (s.banking.loans || []).map(l => ({
+        ...l,
+        principal: l.principal ?? l.remaining ?? '0',
+        remaining: l.remaining ?? '0',
+        accruedInterest: l.accruedInterest ?? '0'
+    }));
     s.banking.creditScore ??= 680;
     s.banking.repaidCount ??= 0;
+    s.banking.interestEarned ??= '0';
+    s.banking.interestPaid ??= '0';
+    s.banking.lastScoreBoostAt ??= null;
     s.businesses = (s.businesses || []).map(normalizeBusiness);
 
     return s;
@@ -320,16 +338,19 @@ export function settle(state, t, c = defaultCatalog) {
         const stepProp = rates.property.times(dt).div(3600000);
         const stepDiv = rates.dividend.times(dt).div(3600000);
 
-        // Personal savings interest (4% APY, +0.5% with FinTech Core) & loan interest accrual
+        // Accelerated financial time: 24 real hours (86400s) = 1 financial year (360 days)
+        const finYears = D(dt).div(1000).div(FINANCIAL_TIME.REAL_SECONDS_PER_FINANCIAL_YEAR);
         if (D(s.banking.savings).gt(0)) {
-            const apy = (s.research?.completed || []).includes('fintech') ? 0.045 : 0.04;
-            const savInt = D(s.banking.savings).times(apy / 8760).times(dt).div(3600000);
+            const apy = savingsApy(s);
+            const savFactor = D(1).plus(D(apy).div(100)).pow(finYears).minus(1);
+            const savInt = D(s.banking.savings).times(savFactor);
             s.banking.savings = add(s.banking.savings, savInt);
+            s.banking.interestEarned = add(s.banking.interestEarned || '0', savInt);
         }
         for (const ln of s.banking.loans) {
             if (D(ln.remaining).gt(0)) {
-                const lnInt = D(ln.remaining).times(ln.rate / 100 / 8760).times(dt).div(3600000);
-                ln.remaining = add(ln.remaining, lnInt);
+                const lnInt = D(ln.remaining).times(D(ln.rate).div(100)).times(finYears);
+                ln.accruedInterest = add(ln.accruedInterest || '0', lnInt);
             }
         }
 
@@ -892,11 +913,17 @@ export function apply(state, a, t, c = defaultCatalog) {
 
         case 'takeLoan': {
             const amt = D(a.amount || 0);
+            if (amt.lt(1000)) {
+                throw Error('Minimum loan amount is $1,000');
+            }
             const score = s.banking.creditScore || 680;
             const nw = D(netWorth(s, c));
             const maxLoan = D(Math.max(50000, nw.toNumber() * 0.5 * (score / 650)));
-            const currentDebt = s.banking.loans.reduce((sum, l) => sum.plus(l.remaining), D(0));
-            if (amt.lte(0) || currentDebt.plus(amt).gt(maxLoan)) {
+            const currentDebt = s.banking.loans.reduce(
+                (sum, l) => sum.plus(l.remaining || '0').plus(l.accruedInterest || '0'),
+                D(0)
+            );
+            if (currentDebt.plus(amt).gt(maxLoan)) {
                 throw Error('Exceeds credit limit');
             }
             if (s.banking.loans.length >= 5) {
@@ -904,22 +931,40 @@ export function apply(state, a, t, c = defaultCatalog) {
             }
             const rate = Math.max(5.5, Math.min(20, 22 - (score - 300) * 0.03));
             s.cash = add(s.cash, amt);
-            s.banking.loans.push({ id: a.id, principal: amt.toString(), remaining: amt.toString(), rate: Number(rate.toFixed(2)), at: t });
+            s.banking.loans.push({
+                id: a.id,
+                principal: amt.toString(),
+                remaining: amt.toString(),
+                accruedInterest: '0',
+                rate: Number(rate.toFixed(2)),
+                at: t
+            });
             break;
         }
 
         case 'repayLoan': {
             const ln = s.banking.loans.find(l => l.id === a.target);
             if (!ln) throw Error('Loan not found');
-            const amt = a.full ? D(ln.remaining) : D(a.amount || 0);
-            const pay = amt.gt(ln.remaining) ? D(ln.remaining) : amt;
+            const accrued = D(ln.accruedInterest || '0');
+            const totalOwed = D(ln.remaining).plus(accrued);
+            const amt = a.full ? totalOwed : D(a.amount || 0);
+            const pay = amt.gt(totalOwed) ? totalOwed : amt;
             if (pay.lte(0)) throw Error('Invalid repayment');
             spend(s, pay);
-            ln.remaining = D(ln.remaining).minus(pay).toString();
-            if (D(ln.remaining).lte('0.01')) {
+            const intPaid = pay.gt(accrued) ? accrued : pay;
+            const prinPaid = pay.minus(intPaid);
+            ln.accruedInterest = accrued.minus(intPaid).toString();
+            ln.remaining = D(ln.remaining).minus(prinPaid).toString();
+            s.banking.interestPaid = add(s.banking.interestPaid || '0', intPaid);
+            if (D(ln.remaining).plus(ln.accruedInterest).lte('0.01')) {
                 s.banking.loans = s.banking.loans.filter(l => l.id !== ln.id);
                 s.banking.repaidCount = (s.banking.repaidCount || 0) + 1;
-                s.banking.creditScore = Math.min(850, (s.banking.creditScore || 680) + 12);
+                const canBoostScore = D(ln.principal || '0').gte(5000) &&
+                    (s.banking.lastScoreBoostAt === null || (t - s.banking.lastScoreBoostAt) >= 600000);
+                if (canBoostScore) {
+                    s.banking.creditScore = Math.min(850, (s.banking.creditScore || 680) + 12);
+                    s.banking.lastScoreBoostAt = t;
+                }
             }
             break;
         }
@@ -1158,14 +1203,40 @@ export function financialStatement(state, c = defaultCatalog) {
         if (qty > 0) assetVal = assetVal.plus(D(x.price).times(qty));
     }
 
-    const totalAssets = cash.plus(s.banking?.savings || '0').plus(bizVal).plus(investVal).plus(propVal).plus(assetVal);
-    const liabilities = (s.banking?.loans || []).reduce((sum, l) => sum.plus(l.remaining || '0'), D(0));
+    const savBal = D(s.banking?.savings || '0');
+    const apy = savingsApy(s);
+    const hourYears = D(3600).div(FINANCIAL_TIME.REAL_SECONDS_PER_FINANCIAL_YEAR);
+    const savHourly = savBal.gt(0)
+        ? savBal.times(D(1).plus(D(apy).div(100)).pow(hourYears).minus(1))
+        : D(0);
+
+    let loanPrincipal = D(0), loanAccrued = D(0), loanHourly = D(0);
+    for (const ln of (s.banking?.loans || [])) {
+        const rem = D(ln.remaining || '0');
+        const acc = D(ln.accruedInterest || '0');
+        loanPrincipal = loanPrincipal.plus(rem);
+        loanAccrued = loanAccrued.plus(acc);
+        loanHourly = loanHourly.plus(rem.times(D(ln.rate).div(100)).times(hourYears));
+    }
+
+    const totalAssets = cash.plus(savBal).plus(bizVal).plus(investVal).plus(propVal).plus(assetVal);
+    const liabilities = loanPrincipal.plus(loanAccrued);
     const netWorthVal = totalAssets.minus(liabilities);
-    const grossRev = bizRev.plus(propRev).plus(divRev);
-    const netHourly = bizNet.plus(propRev).plus(divRev);
+    const grossRev = bizRev.plus(propRev).plus(divRev).plus(savHourly);
+    const totalExp = bizExp.plus(loanHourly);
+    const netHourly = bizNet.plus(propRev).plus(divRev).plus(savHourly).minus(loanHourly);
 
     return {
         cash: cash.toString(),
+        savings: savBal.toString(),
+        apy,
+        savHourly: savHourly.toString(),
+        loanPrincipal: loanPrincipal.toString(),
+        loanAccrued: loanAccrued.toString(),
+        loanHourly: loanHourly.toString(),
+        netBankingHourly: savHourly.minus(loanHourly).toString(),
+        interestEarned: s.banking?.interestEarned || '0',
+        interestPaid: s.banking?.interestPaid || '0',
         bizVal: bizVal.toString(),
         investVal: investVal.toString(),
         propVal: propVal.toString(),
@@ -1174,7 +1245,7 @@ export function financialStatement(state, c = defaultCatalog) {
         liabilities: liabilities.toString(),
         netWorth: netWorthVal.toString(),
         grossRev: grossRev.toString(),
-        expenses: bizExp.toString(),
+        expenses: totalExp.toString(),
         netHourly: netHourly.toString(),
         businessRows
     };
@@ -1184,7 +1255,7 @@ export function netWorth(s, c = defaultCatalog) {
     let n = D(s.cash).plus(s.banking?.savings || '0');
 
     for (const ln of (s.banking?.loans || [])) {
-        n = n.minus(ln.remaining || '0');
+        n = n.minus(ln.remaining || '0').minus(ln.accruedInterest || '0');
     }
 
     for (const b of s.businesses) {
