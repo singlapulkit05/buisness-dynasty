@@ -22,17 +22,23 @@ export default function FinanceDashboard({ s, c, onBack, act }) {
   const earnedProj = Number(s.earned?.project || 0);
   const lifetime = earnedBiz + earnedProp + earnedDiv + earnedProj;
 
+  function csvCell(val) {
+    const str = String(val ?? '');
+    const safe = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+    return `"${safe.replace(/"/g, '""')}"`;
+  }
+
   function exportCsv() {
     const rows = [
       ['Timestamp', 'Type', 'Category', 'Source', 'Amount', 'PrevCash', 'NewCash'].join(','),
       ...(s.ledger || []).map(e => [
-        new Date(e.at).toISOString(),
-        e.type,
-        e.category,
-        JSON.stringify(String(e.source || '')),
-        e.amount,
-        e.prevCash,
-        e.newCash
+        csvCell(new Date(e.at).toISOString()),
+        csvCell(e.type),
+        csvCell(e.category),
+        csvCell(e.source || ''),
+        csvCell(e.amount),
+        csvCell(e.prevCash),
+        csvCell(e.newCash)
       ].join(','))
     ];
     const blob = new Blob([rows.join('\n')], { type: 'text/csv' });

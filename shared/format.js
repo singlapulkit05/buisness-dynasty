@@ -32,6 +32,11 @@ export function money(x) {
         return `${sign}$${abs.toExponential(2)}`;
     }
 
+    if (abs.gt(0) && abs.lt(1)) {
+        const decimals = abs.lt('0.01') ? 6 : 4;
+        return `${sign}$${abs.toFixed(decimals)}`;
+    }
+
     const fixed = abs.toFixed(2);
     const [intPart, decPart] = fixed.split('.');
     const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');

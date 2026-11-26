@@ -12,7 +12,7 @@ const dur = ms => {
 };
 
 const fmtPayback = hrs => {
-  if (!hrs || !Number.isFinite(hrs) || hrs <= 0) return 'N/A';
+  if (!hrs || !Number.isFinite(hrs) || hrs <= 0) return 'No positive payback at current settings';
   if (hrs < 1) return `${Math.round(hrs * 60)} min`;
   const h = Math.floor(hrs);
   const m = Math.round((hrs - h) * 60);
