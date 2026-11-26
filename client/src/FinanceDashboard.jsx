@@ -1,10 +1,20 @@
 import React, { useState } from 'react';
 import { money } from '../../shared/format.js';
 import { financialStatement } from '../../shared/engine.js';
+import { currentEconomyEvent, recentEconomyEvents } from '../../shared/economy-events.js';
 
-export default function FinanceDashboard({ s, c, onBack }) {
+export default function FinanceDashboard({ s, c, onBack, act }) {
   const [cat, setCat] = useState('all');
+  const [savAmt, setSavAmt] = useState('10000');
+  const [loanAmt, setLoanAmt] = useState('25000');
   const fs = financialStatement(s, c);
+  const ev = currentEconomyEvent(s.at);
+  const news = recentEconomyEvents(s.at, 4);
+  const score = s.banking?.creditScore || 680;
+  const maxLoan = Math.max(50000, Number(fs.netWorth) * 0.5 * (score / 650));
+  const curDebt = (s.banking?.loans || []).reduce((sum, l) => sum + Number(l.remaining), 0);
+  const availCredit = Math.max(0, maxLoan - curDebt);
+  const estRate = Math.max(5.5, Math.min(20, 22 - (score - 300) * 0.03));
   const ledger = (s.ledger || []).filter(e => cat === 'all' || e.category === cat);
   const earnedBiz = Number(s.earned?.business || 0);
   const earnedProp = Number(s.earned?.property || 0);
@@ -50,8 +60,49 @@ export default function FinanceDashboard({ s, c, onBack }) {
         <div className="profile-kv"><span>Stocks &amp; Crypto</span><strong>{money(fs.investVal)}</strong></div>
         <div className="profile-kv"><span>Luxury Assets</span><strong>{money(fs.assetVal)}</strong></div>
         <div className="profile-kv"><span>Total Assets</span><strong>{money(fs.totalAssets)}</strong></div>
+        <div className="profile-kv"><span>Savings (4.0% APY)</span><strong className="green">{money(s.banking?.savings || 0)}</strong></div>
         <div className="profile-kv"><span>Liabilities / Debt</span><strong className="negative">{money(fs.liabilities)}</strong></div>
       </section>
+
+      <section className="news-ticker">
+        <span className="eyebrow">DYNAMIC ECONOMY &amp; NEWS</span>
+        <h3 style={{ color: '#fff', margin: '4px 0' }}>{ev.title}</h3>
+        <p style={{ color: '#cbd5e1', margin: '0 0 8px' }}>{ev.summary}</p>
+        {news.slice(1).map((n, i) => (
+          <div key={i} className="muted" style={{ fontSize: 11, color: '#94a3b8' }}>
+            Earlier: {n.title} — {n.summary}
+          </div>
+        ))}
+      </section>
+
+      {act && (
+        <section>
+          <div className="line">
+            <div><span className="eyebrow">PERSONAL BANKING &amp; CREDIT</span><h3>Savings &amp; Loans</h3></div>
+            <span className="lv-badge">Score {score}</span>
+          </div>
+          <div className="profile-kv"><span>Savings Balance (4% APY)</span><strong className="green">{money(s.banking?.savings || 0)}</strong></div>
+          <div className="coupon-form">
+            <input type="number" min="1" value={savAmt} onChange={e => setSavAmt(e.target.value)} />
+            <button className="small" onClick={() => act({ type: 'bankDeposit', amount: Number(savAmt) })}>Deposit</button>
+            <button className="secondary small" onClick={() => act({ type: 'bankWithdraw', amount: Number(savAmt) })}>Withdraw</button>
+          </div>
+          <div className="profile-kv" style={{ marginTop: 10 }}><span>Available Credit ({estRate.toFixed(1)}% APR)</span><strong>{money(availCredit)}</strong></div>
+          <div className="coupon-form">
+            <input type="number" min="1" value={loanAmt} onChange={e => setLoanAmt(e.target.value)} />
+            <button className="small" onClick={() => act({ type: 'takeLoan', amount: Number(loanAmt) })}>Borrow</button>
+          </div>
+          {(s.banking?.loans || []).map(ln => (
+            <div key={ln.id} className="profile-kv">
+              <span>Loan ({ln.rate}% APR)</span>
+              <div className="line" style={{ gap: 6 }}>
+                <strong className="negative">{money(ln.remaining)}</strong>
+                <button className="small" onClick={() => act({ type: 'repayLoan', target: ln.id, full: true })}>Pay Off</button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
 
       <section>
         <span className="eyebrow">INCOME STATEMENT</span>

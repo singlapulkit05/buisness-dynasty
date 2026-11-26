@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import { getBusinessModel } from './business-models.js';
+import { currentEconomyEvent } from './economy-events.js';
 
 const D = x => new Decimal(x ?? 0);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -233,6 +234,14 @@ export function simulateBusiness(s, rawBiz, t, c) {
     ? calcBank(x, b, t)
     : calcGenericBusiness(x, b, m);
 
+  const ev = currentEconomyEvent(t);
+  let sectorRevMult = ev.mods.revenue;
+  let sectorExpMult = 1;
+  if (b.type === 'oil') sectorRevMult *= ev.mods.oil;
+  if (b.type === 'it' || b.type === 'space' || b.type === 'tech_conglomerate' || b.type === 'aerospace_titan') sectorRevMult *= ev.mods.it;
+  if (b.type === 'construction') sectorRevMult *= ev.mods.construction;
+  if (m.kind === 'fleet') sectorExpMult *= ev.mods.fleetExp;
+
   // Boosters multiply REVENUE only (never expenses or losses)
   let boostMult = D(1);
   for (const q of (s.boosts || [])) {
@@ -241,8 +250,8 @@ export function simulateBusiness(s, rawBiz, t, c) {
     }
   }
 
-  const revenue = sim.revenue.times(boostMult);
-  const expenses = sim.expenses;
+  const revenue = sim.revenue.times(sectorRevMult).times(boostMult);
+  const expenses = sim.expenses.times(sectorExpMult);
   const netProfit = revenue.minus(expenses);
   const margin = revenue.gt(0) ? netProfit.div(revenue).times(100).toNumber() : 0;
 

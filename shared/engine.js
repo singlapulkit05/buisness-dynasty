@@ -3,6 +3,7 @@ import Decimal from 'decimal.js';
 import { catalog as defaultCatalog } from './catalog.js';
 import { getBusinessModel } from './business-models.js';
 import { normalizeBusiness, simulateBusiness, upgradeSpec, businessValuation } from './business-sim.js';
+import { currentEconomyEvent } from './economy-events.js';
 
 Decimal.set({ precision: 40 });
 
@@ -16,6 +17,8 @@ export function initial(now = Date.now(), c = defaultCatalog) {
         businesses: [],
         holdings: {},
         costBasis: {},
+        watchlist: [],
+        orders: [],
         properties: {},
         assets: {},
         boosts: [],
@@ -23,6 +26,7 @@ export function initial(now = Date.now(), c = defaultCatalog) {
         slots: c.startingSlots,
         slotJob: null,
         storage: { ...(c.startingStorage || { garage: 4, hangar: 2, marina: 2 }) },
+        banking: { savings: '0', loans: [], creditScore: 680, repaidCount: 0 },
         merger: null,
         tickets: 0,
         history: [],
@@ -53,6 +57,13 @@ export function normalizeState(state) {
     }
 
     s.ledger ??= [];
+    s.watchlist ??= [];
+    s.orders ??= [];
+    s.banking ??= { savings: '0', loans: [], creditScore: 680, repaidCount: 0 };
+    s.banking.savings ??= '0';
+    s.banking.loans ??= [];
+    s.banking.creditScore ??= 680;
+    s.banking.repaidCount ??= 0;
     s.businesses = (s.businesses || []).map(normalizeBusiness);
 
     return s;
@@ -97,9 +108,10 @@ export function hourlyBreakdown(s, t = s.at, c = defaultCatalog) {
         business = business.plus(businessRate(s, b, t, c));
     }
 
+    const evPropMult = currentEconomyEvent(t).mods.property;
     for (const p of c.properties) {
         property = property.plus(
-            D(p.income).times(s.properties?.[p.id] || 0)
+            D(p.income).times(s.properties?.[p.id] || 0).times(evPropMult)
         );
     }
 
@@ -183,6 +195,47 @@ function finish(s, t, c) {
     }
 
     s.boosts = s.boosts.filter(b => b.end > t);
+
+    // Process pending limit / stop orders deterministically
+    if (s.orders?.length) {
+        const remainingOrders = [];
+        for (const ord of s.orders) {
+            const list = c[ord.category];
+            const item = list?.find(x => x.id === ord.item);
+            if (!item) continue;
+            const curPrice = D(price(item, t));
+            const targetP = D(ord.targetPrice);
+            const triggered = ord.side === 'buy'
+                ? (ord.kind === 'limit' ? curPrice.lte(targetP) : curPrice.gte(targetP))
+                : (ord.kind === 'limit' ? curPrice.gte(targetP) : curPrice.lte(targetP));
+            if (triggered) {
+                if (ord.side === 'buy') {
+                    const actualCost = curPrice.times(ord.qty);
+                    const reserved = targetP.times(ord.qty);
+                    const refund = reserved.minus(actualCost);
+                    if (refund.gt(0)) s.cash = add(s.cash, refund);
+                    s.holdings[item.id] = (s.holdings[item.id] || 0) + ord.qty;
+                    s.costBasis[item.id] = add(s.costBasis[item.id] || '0', actualCost);
+                } else {
+                    const proceeds = curPrice.times(ord.qty);
+                    s.cash = add(s.cash, proceeds);
+                }
+                s.ledger = [{
+                    id: `ord-${ord.id}`,
+                    at: t,
+                    type: `order_${ord.side}`,
+                    category: 'invest',
+                    source: item.name,
+                    amount: ord.side === 'buy' ? '0' : curPrice.times(ord.qty).toString(),
+                    prevCash: s.cash,
+                    newCash: s.cash
+                }, ...(s.ledger || [])].slice(0, 200);
+            } else {
+                remainingOrders.push(ord);
+            }
+        }
+        s.orders = remainingOrders;
+    }
 }
 
 export function settle(state, t, c = defaultCatalog) {
@@ -197,8 +250,12 @@ export function settle(state, t, c = defaultCatalog) {
     finish(s, cursor, c);
 
     while (cursor < t) {
+        const nextHour = (Math.floor(cursor / 3600000) + 1) * 3600000;
+        const nextEcon = (Math.floor(cursor / 7200000) + 1) * 7200000;
         const boundaries = [
             t,
+            nextHour,
+            nextEcon,
             ...s.boosts.flatMap(b => [b.start, b.end]),
             ...s.businesses.map(b => b.job?.end),
             s.slotJob,
@@ -217,6 +274,18 @@ export function settle(state, t, c = defaultCatalog) {
         const rates = hourlyBreakdown(s, cursor, c);
         const stepProp = rates.property.times(dt).div(3600000);
         const stepDiv = rates.dividend.times(dt).div(3600000);
+
+        // Personal savings interest (4% APY) & loan interest accrual
+        if (D(s.banking.savings).gt(0)) {
+            const savInt = D(s.banking.savings).times(0.04 / 8760).times(dt).div(3600000);
+            s.banking.savings = add(s.banking.savings, savInt);
+        }
+        for (const ln of s.banking.loans) {
+            if (D(ln.remaining).gt(0)) {
+                const lnInt = D(ln.remaining).times(ln.rate / 100 / 8760).times(dt).div(3600000);
+                ln.remaining = add(ln.remaining, lnInt);
+            }
+        }
 
         s.earned.business = add(s.earned.business, stepBiz);
         s.earned.property = add(s.earned.property, stepProp);
@@ -734,6 +803,96 @@ export function apply(state, a, t, c = defaultCatalog) {
             break;
         }
 
+        case 'bankDeposit': {
+            const amt = D(a.amount || 0);
+            if (amt.lte(0)) throw Error('Invalid deposit amount');
+            spend(s, amt);
+            s.banking.savings = add(s.banking.savings, amt);
+            break;
+        }
+
+        case 'bankWithdraw': {
+            const amt = D(a.amount || 0);
+            if (amt.lte(0) || D(s.banking.savings).lt(amt)) throw Error('Insufficient savings');
+            s.banking.savings = D(s.banking.savings).minus(amt).toString();
+            s.cash = add(s.cash, amt);
+            break;
+        }
+
+        case 'takeLoan': {
+            const amt = D(a.amount || 0);
+            const score = s.banking.creditScore || 680;
+            const nw = D(netWorth(s, c));
+            const maxLoan = D(Math.max(50000, nw.toNumber() * 0.5 * (score / 650)));
+            const currentDebt = s.banking.loans.reduce((sum, l) => sum.plus(l.remaining), D(0));
+            if (amt.lte(0) || currentDebt.plus(amt).gt(maxLoan)) {
+                throw Error('Exceeds credit limit');
+            }
+            if (s.banking.loans.length >= 5) {
+                throw Error('Maximum 5 active loans');
+            }
+            const rate = Math.max(5.5, Math.min(20, 22 - (score - 300) * 0.03));
+            s.cash = add(s.cash, amt);
+            s.banking.loans.push({ id: a.id, principal: amt.toString(), remaining: amt.toString(), rate: Number(rate.toFixed(2)), at: t });
+            break;
+        }
+
+        case 'repayLoan': {
+            const ln = s.banking.loans.find(l => l.id === a.target);
+            if (!ln) throw Error('Loan not found');
+            const amt = a.full ? D(ln.remaining) : D(a.amount || 0);
+            const pay = amt.gt(ln.remaining) ? D(ln.remaining) : amt;
+            if (pay.lte(0)) throw Error('Invalid repayment');
+            spend(s, pay);
+            ln.remaining = D(ln.remaining).minus(pay).toString();
+            if (D(ln.remaining).lte('0.01')) {
+                s.banking.loans = s.banking.loans.filter(l => l.id !== ln.id);
+                s.banking.repaidCount = (s.banking.repaidCount || 0) + 1;
+                s.banking.creditScore = Math.min(850, (s.banking.creditScore || 680) + 12);
+            }
+            break;
+        }
+
+        case 'toggleWatchlist': {
+            if (!a.item) throw Error('Unknown item');
+            const exists = s.watchlist.includes(a.item);
+            s.watchlist = exists ? s.watchlist.filter(x => x !== a.item) : [...s.watchlist, a.item];
+            break;
+        }
+
+        case 'placeOrder': {
+            if (!['stocks', 'crypto'].includes(a.category)) throw Error('Invalid market');
+            const item = find(c[a.category], a.item);
+            const targetP = D(a.targetPrice || 0);
+            if (targetP.lte(0) || !['buy', 'sell'].includes(a.side) || !['limit', 'stop'].includes(a.kind)) {
+                throw Error('Invalid order');
+            }
+            if (s.orders.length >= 20) throw Error('Maximum 20 open orders');
+            if (a.side === 'buy') {
+                spend(s, targetP.times(qty));
+            } else {
+                const owned = s.holdings[item.id] || 0;
+                if (owned < qty) throw Error('Not enough owned');
+                s.holdings[item.id] = owned - qty;
+                const prevCost = D(s.costBasis[item.id] || '0');
+                s.costBasis[item.id] = owned - qty === 0 ? '0' : prevCost.times(owned - qty).div(owned).toString();
+            }
+            s.orders.push({ id: a.id, category: a.category, item: item.id, side: a.side, kind: a.kind, targetPrice: targetP.toString(), qty, at: t });
+            break;
+        }
+
+        case 'cancelOrder': {
+            const ord = s.orders.find(o => o.id === a.target);
+            if (!ord) throw Error('Order not found');
+            if (ord.side === 'buy') {
+                s.cash = add(s.cash, D(ord.targetPrice).times(ord.qty));
+            } else {
+                s.holdings[ord.item] = (s.holdings[ord.item] || 0) + ord.qty;
+            }
+            s.orders = s.orders.filter(o => o.id !== ord.id);
+            break;
+        }
+
         default:
             throw Error('Unknown action');
     }
@@ -809,8 +968,8 @@ export function financialStatement(state, c = defaultCatalog) {
         if (qty > 0) assetVal = assetVal.plus(D(x.price).times(qty));
     }
 
-    const totalAssets = cash.plus(bizVal).plus(investVal).plus(propVal).plus(assetVal);
-    const liabilities = D(0);
+    const totalAssets = cash.plus(s.banking?.savings || '0').plus(bizVal).plus(investVal).plus(propVal).plus(assetVal);
+    const liabilities = (s.banking?.loans || []).reduce((sum, l) => sum.plus(l.remaining || '0'), D(0));
     const netWorthVal = totalAssets.minus(liabilities);
     const grossRev = bizRev.plus(propRev).plus(divRev);
     const netHourly = bizNet.plus(propRev).plus(divRev);
@@ -832,7 +991,11 @@ export function financialStatement(state, c = defaultCatalog) {
 }
 
 export function netWorth(s, c = defaultCatalog) {
-    let n = D(s.cash);
+    let n = D(s.cash).plus(s.banking?.savings || '0');
+
+    for (const ln of (s.banking?.loans || [])) {
+        n = n.minus(ln.remaining || '0');
+    }
 
     for (const b of s.businesses) {
         n = n.plus(businessValuation(b, c));
