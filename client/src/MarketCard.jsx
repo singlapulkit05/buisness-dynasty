@@ -7,18 +7,23 @@ import {money} from '../../shared/format.js';
 import {api} from './storage.js';
 const ranges={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760};
 export default function MarketCard({item,category,owned,costBasis,watched,orders,at,cash,act,online=true,liveQuote=null,onCloudUpdate}){
- const [range,R]=useState('1W'),[side,S]=useState('buy'),[orderKind,K]=useState('market'),[targetP,TP]=useState(''),[mode,M]=useState('qty'),[qty,Q]=useState('1'),[usd,U]=useState('1000'),[hover,H]=useState(null),[candles,setCandles]=useState([]),[tradeBusy,setTradeBusy]=useState(false),[tradeMsg,setTradeMsg]=useState(''); const id=useId().replace(/:/g,'');
+ const [range,R]=useState('1W'),[side,S]=useState('buy'),[orderKind,K]=useState('market'),[targetP,TP]=useState(''),[mode,M]=useState('qty'),[qty,Q]=useState('1'),[usd,U]=useState('1000'),[hover,H]=useState(null),[candles,setCandles]=useState([]),[candles1h,setCandles1h]=useState([]),[tradeBusy,setTradeBusy]=useState(false),[tradeMsg,setTradeMsg]=useState(''); const id=useId().replace(/:/g,'');
 
  useEffect(()=>{
   if(!online)return;
   let alive=true;
-  api(`/market/history/${category}/${item.id}`).then(res=>{if(alive&&Array.isArray(res.candles))setCandles(res.candles)}).catch(()=>{});
+  api(`/market/history/${category}/${item.id}`).then(res=>{
+   if(!alive)return;
+   if(Array.isArray(res.candles))setCandles(res.candles);
+   if(Array.isArray(res.candles1h))setCandles1h(res.candles1h);
+  }).catch(()=>{});
   return()=>{alive=false};
  },[item.id,category,online,liveQuote?.tickId]);
 
  const hours=ranges[range],end=Math.floor(at/3600000)*3600000, count=Math.min(hours,120);
  const basePoints=Array.from({length:count+1},(_,i)=>{const t=end-Math.round(hours*(1-i/count))*3600000;return {t,v:Number(price(item,t))}});
- const points=range==='1D'&&candles.length>=2?candles.map(c=>({t:c.t,v:Number(c.c)})):basePoints;
+ const rawSeries=range==='1D'&&candles.length>=2?candles.map(c=>({t:c.t,v:Number(c.c)})):(candles1h.length>=2?candles1h.slice(-Math.min(candles1h.length,hours)).map(c=>({t:c.t,v:Number(c.c)})):basePoints);
+ const points=liveQuote&&rawSeries.length?[...rawSeries.slice(0,-1),{t:new Date(liveQuote.updatedAt||at).getTime(),v:Number(liveQuote.price)}]:rawSeries;
  const ptCount=Math.max(1,points.length-1);
  const current=liveQuote?Number(liveQuote.price):points.at(-1).v;
  const first=points[0].v, change=first>0?(current/first-1)*100:0, up=change>=0, color=up?'#087f5b':'#c24141';

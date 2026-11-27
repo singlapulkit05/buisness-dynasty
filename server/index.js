@@ -223,7 +223,8 @@ const marketQuoteSchema = new mongoose.Schema({
     prevPrice: { type: String, required: true },
     tickId: { type: Number, required: true },
     updatedAt: { type: Date, required: true },
-    candles: { type: [mongoose.Schema.Types.Mixed], default: [] }
+    candles: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    candles1h: { type: [mongoose.Schema.Types.Mixed], default: [] }
 });
 const MarketQuote = mongoose.model('MarketQuote', marketQuoteSchema);
 
@@ -1530,16 +1531,46 @@ app.post(
 let marketCache = null;
 let marketAdvancePromise = null;
 
+function seedHourlyCandles(item, cat, now, endPrice) {
+    const hours = 168;
+    const arr = [];
+    let p = String(item.price);
+    const startHour = Math.floor(now / 3600000) - hours;
+    for (let i = 0; i < hours; i++) {
+        const tk = startHour + i;
+        const tAt = tk * 3600000;
+        p = stepMarketPrice({
+            prevPrice: p,
+            anchorPrice: item.price,
+            category: cat,
+            symbol: item.id,
+            tickId: tk,
+            secretKey: secret,
+            t: tAt
+        });
+        arr.push({ t: tAt, o: Number(p), h: Number(p), l: Number(p), c: Number(p) });
+    }
+    if (endPrice !== undefined && arr.length) {
+        const ep = Number(endPrice);
+        arr[arr.length - 1].c = ep;
+        arr[arr.length - 1].h = Math.max(arr[arr.length - 1].h, ep);
+        arr[arr.length - 1].l = Math.min(arr[arr.length - 1].l, ep);
+    }
+    return arr;
+}
+
 async function ensureMarketLoaded(now) {
     if (marketCache) return marketCache;
     const docs = await MarketQuote.find().lean();
     const bySym = new Map(docs.map(d => [d.symbol, d]));
     const toInsert = [];
+    const backfillOps = [];
     for (const cat of ['stocks', 'crypto']) {
         const tickMs = cat === 'crypto' ? MARKET_CONFIG.CRYPTO_TICK_MS : MARKET_CONFIG.STOCK_TICK_MS;
         const tickId = Math.floor(now / tickMs);
         for (const item of catalog[cat]) {
-            if (!bySym.has(item.id)) {
+            const existing = bySym.get(item.id);
+            if (!existing) {
                 const pStr = String(item.price);
                 const doc = {
                     symbol: item.id,
@@ -1549,15 +1580,27 @@ async function ensureMarketLoaded(now) {
                     prevPrice: pStr,
                     tickId,
                     updatedAt: new Date(now),
-                    candles: updateCandles([], pStr, now, 60000)
+                    candles: updateCandles([], pStr, now, 60000),
+                    candles1h: seedHourlyCandles(item, cat, now, pStr)
                 };
                 toInsert.push(doc);
                 bySym.set(item.id, doc);
+            } else if (!existing.candles1h || existing.candles1h.length < 2) {
+                existing.candles1h = seedHourlyCandles(item, cat, now, existing.price);
+                backfillOps.push({
+                    updateOne: {
+                        filter: { symbol: item.id },
+                        update: { $set: { candles1h: existing.candles1h } }
+                    }
+                });
             }
         }
     }
     if (toInsert.length) {
         await MarketQuote.insertMany(toInsert, { ordered: false }).catch(() => {});
+    }
+    if (backfillOps.length) {
+        await MarketQuote.bulkWrite(backfillOps, { ordered: false }).catch(() => {});
     }
     marketCache = bySym;
     return marketCache;
@@ -1579,6 +1622,7 @@ async function advanceMarketTo(now = Date.now()) {
             const startTick = targetTick - steps + 1;
             let cur = q.price;
             let candles = q.candles || [];
+            let candles1h = q.candles1h || [];
             const prevHourPrice = q.prevPrice || q.price;
 
             for (let tk = startTick; tk <= targetTick; tk++) {
@@ -1593,6 +1637,7 @@ async function advanceMarketTo(now = Date.now()) {
                     t: tAt
                 });
                 candles = updateCandles(candles, cur, tAt, 60000);
+                candles1h = updateCandles(candles1h, cur, tAt, 3600000);
             }
 
             q.prevPrice = prevHourPrice;
@@ -1600,6 +1645,7 @@ async function advanceMarketTo(now = Date.now()) {
             q.tickId = targetTick;
             q.updatedAt = new Date(now);
             q.candles = candles;
+            q.candles1h = candles1h;
             triggeredSymbols.add(q.symbol);
 
             ops.push({
@@ -1611,7 +1657,8 @@ async function advanceMarketTo(now = Date.now()) {
                             prevPrice: q.prevPrice,
                             tickId: targetTick,
                             updatedAt: q.updatedAt,
-                            candles
+                            candles,
+                            candles1h
                         }
                     }
                 }
@@ -1719,7 +1766,8 @@ app.get(
             prevPrice: q.prevPrice,
             tickId: q.tickId,
             updatedAt: q.updatedAt,
-            candles: q.candles || []
+            candles: q.candles || [],
+            candles1h: q.candles1h || []
         });
     })
 );
