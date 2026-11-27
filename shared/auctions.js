@@ -22,15 +22,16 @@ export function storageKeyForAsset(item) {
 }
 
 export function minNextBid(auction) {
-  if (!auction) return '0';
-  if (!auction.highestBidId || !auction.highestBidAmount) {
-    return new Decimal(auction.startingBid).toDecimalPlaces(2).toString();
+  const a = typeof auction?.toObject === 'function' ? auction.toObject() : auction;
+  if (!a) return '0';
+  if (!a.highestBidId || !a.highestBidAmount) {
+    return new Decimal(a.startingBid).toDecimalPlaces(2).toString();
   }
-  const cur = new Decimal(auction.highestBidAmount);
+  const cur = new Decimal(a.highestBidAmount);
   const inc = Decimal.max(1, cur.times('0.01').toDecimalPlaces(2));
   let next = cur.plus(inc);
-  if (auction.cataloguePrice) {
-    const cap = new Decimal(auction.cataloguePrice);
+  if (a.cataloguePrice) {
+    const cap = new Decimal(a.cataloguePrice);
     if (next.gt(cap)) next = cap;
   }
   return next.toDecimalPlaces(2).toString();

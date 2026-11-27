@@ -2207,7 +2207,8 @@ const auctionLimit = rateLimit({
     keyGenerator: req => String(req.user?._id || req.ip)
 });
 
-function serializeAuction(a, viewerId) {
+function serializeAuction(rawAuc, viewerId) {
+    const a = typeof rawAuc?.toObject === 'function' ? rawAuc.toObject() : rawAuc;
     const isSeller = viewerId && String(a.sellerId) === String(viewerId);
     const catPrice = a.cataloguePrice || String(catalog.assets.find(x => x.id === a.catalogueId)?.price || a.startingBid);
     const reserveMet = a.reservePrice

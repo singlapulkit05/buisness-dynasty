@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import GameArt from './GameArt.jsx';
 import { money } from '../../shared/format.js';
 import { api } from './storage.js';
@@ -24,6 +24,8 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
 
   const [detail, setDetail] = useState(null);
   const [bidAmt, setBidAmt] = useState('');
+  const bidDirtyRef = useRef(false);
+  const activeAucIdRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -64,7 +66,23 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
     try {
       const res = await api('/auctions/' + id);
       setDetail(res);
-      setBidAmt(String(res.auction.minNextBid));
+      const nextMin = String(res.auction.minNextBid);
+      const switchedAuction = activeAucIdRef.current !== id;
+      if (switchedAuction) {
+        activeAucIdRef.current = id;
+        bidDirtyRef.current = false;
+        setBidAmt(nextMin);
+      } else {
+        setBidAmt(prev => {
+          const prevNum = Number(prev);
+          const minNum = Number(nextMin);
+          if (!bidDirtyRef.current || !prev || !Number.isFinite(prevNum) || prevNum < minNum) {
+            bidDirtyRef.current = false;
+            return nextMin;
+          }
+          return prev;
+        });
+      }
     } catch (e) {
       setErr(e.message);
     }
@@ -85,20 +103,27 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
   async function placeBid(e) {
     e.preventDefault();
     if (!detail || !online || busy) return;
+    const submitAmt = Number(bidAmt);
+    if (!Number.isFinite(submitAmt) || submitAmt <= 0) return;
     if (onConfirm) {
       const ok = await onConfirm({
         title: `Confirm Bid: ${detail.auction.assetName}`,
-        message: `Place a binding bid of ${money(bidAmt || 0)}? Funds will be held in escrow until outbid or settled.`,
+        message: `Place a binding bid of ${money(submitAmt)}? Funds will be held in escrow until outbid or settled.`,
         confirmLabel: 'Place Bid'
       });
       if (!ok) return;
     }
     setBusy(true); setErr(''); setMsg('');
     try {
-      const res = await api(`/auctions/${detail.auction._id}/bids`, { amount: Number(bidAmt) });
+      const res = await api(`/auctions/${detail.auction._id}/bids`, { amount: submitAmt });
       if (onCloudUpdate && res.cloud) await onCloudUpdate(res.cloud);
+      if (res.auction) {
+        setDetail(prev => ({ ...(prev || {}), auction: res.auction }));
+        bidDirtyRef.current = false;
+        setBidAmt(String(res.auction.minNextBid));
+      }
       setMsg('Bid accepted and funds placed in escrow.');
-      if (onAlert) onAlert('Bid Accepted', `Leading bid ${money(bidAmt)} placed in escrow.`, 'success');
+      if (onAlert) onAlert('Bid Accepted', `Leading bid ${money(submitAmt)} placed in escrow.`, 'success');
       await loadDetail(detail.auction._id);
     } catch (e) {
       setErr(e.message);
@@ -185,7 +210,7 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
                   ) : (
                     <>
                       <label>Your Bid ($)
-                        <input type="number" min={Number(a.minNextBid)} max={Number(a.cataloguePrice || assetItem?.price || 1e12)} step="1" value={bidAmt} onChange={e => setBidAmt(e.target.value)} />
+                        <input type="number" min={Number(a.minNextBid)} max={Number(a.cataloguePrice || assetItem?.price || 1e12)} step="any" value={bidAmt} onChange={e => { bidDirtyRef.current = true; setBidAmt(e.target.value); }} />
                       </label>
                       <button disabled={!online || busy || endsMs <= nowMs}>
                         {busy ? 'Submitting…' : a.isLeading ? 'Increase Leading Bid' : `Place Bid · ${money(bidAmt || 0)}`}

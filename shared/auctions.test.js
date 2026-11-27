@@ -40,6 +40,9 @@ test('auction listing validation enforces $1 to new asset price cap and minimum 
 
   assert.equal(minNextBid({ startingBid: '500', cataloguePrice: '1000', highestBidId: null }), '500');
   assert.equal(minNextBid({ startingBid: '500', cataloguePrice: '1000', highestBidId: 'b1', highestBidAmount: '995' }), '1000');
+  // Supports document-like wrappers (e.g., Mongoose documents with .toObject())
+  const docLike = { toObject: () => ({ startingBid: '500', cataloguePrice: '2000', highestBidId: 'b2', highestBidAmount: '700' }) };
+  assert.equal(minNextBid(docLike), '707');
 });
 
 test('instant selling an asset refunds 50% and lockedAssets blocks instant-sell', () => {
