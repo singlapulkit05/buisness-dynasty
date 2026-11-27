@@ -7,7 +7,7 @@ import {money} from '../../shared/format.js';
 import {api} from './storage.js';
 const ranges={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760};
 export default function MarketCard({item,category,owned,costBasis,watched,orders,at,cash,act,online=true,liveQuote=null,onCloudUpdate,onAlert,onConfirm}){
- const [range,R]=useState('1W'),[side,S]=useState('buy'),[orderKind,K]=useState('market'),[targetP,TP]=useState(''),[mode,M]=useState('qty'),[qty,Q]=useState('1'),[usd,U]=useState('1000'),[hover,H]=useState(null),[candles,setCandles]=useState([]),[candles1h,setCandles1h]=useState([]),[tradeBusy,setTradeBusy]=useState(false),[tradeMsg,setTradeMsg]=useState(''); const id=useId().replace(/:/g,'');
+ const [range,R]=useState('1W'),[side,S]=useState('buy'),[orderKind,K]=useState('market'),[targetP,TP]=useState(''),[mode,M]=useState('qty'),[qty,Q]=useState('1'),[usd,U]=useState('1000'),[hover,H]=useState(null),[candles,setCandles]=useState([]),[candles1h,setCandles1h]=useState([]),[candles1d,setCandles1d]=useState([]),[tradeBusy,setTradeBusy]=useState(false),[tradeMsg,setTradeMsg]=useState(''); const id=useId().replace(/:/g,'');
 
  useEffect(()=>{
   if(!online)return;
@@ -16,13 +16,23 @@ export default function MarketCard({item,category,owned,costBasis,watched,orders
    if(!alive)return;
    if(Array.isArray(res.candles))setCandles(res.candles);
    if(Array.isArray(res.candles1h))setCandles1h(res.candles1h);
+   if(Array.isArray(res.candles1d))setCandles1d(res.candles1d);
   }).catch(()=>{});
   return()=>{alive=false};
  },[item.id,category,online,liveQuote?.tickId]);
 
  const hours=ranges[range],end=Math.floor(at/3600000)*3600000, count=Math.min(hours,120);
  const basePoints=Array.from({length:count+1},(_,i)=>{const t=end-Math.round(hours*(1-i/count))*3600000;return {t,v:Number(price(item,t))}});
- const rawSeries=range==='1D'&&candles.length>=2?candles.map(c=>({t:c.t,v:Number(c.c)})):(candles1h.length>=2?candles1h.slice(-Math.min(candles1h.length,hours)).map(c=>({t:c.t,v:Number(c.c)})):basePoints);
+ let rawSeries=basePoints;
+ if(range==='1D'){
+  if(candles.length>=12)rawSeries=candles.map(c=>({t:c.t,v:Number(c.c)}));
+  else if(candles1h.length>=2)rawSeries=candles1h.slice(-24).map(c=>({t:c.t,v:Number(c.c)}));
+ }else if(range==='1W'&&candles1h.length>=2){
+  rawSeries=candles1h.slice(-168).map(c=>({t:c.t,v:Number(c.c)}));
+ }else if((range==='1M'||range==='3M'||range==='1Y')&&candles1d.length>=2){
+  const daysNeed=range==='1M'?30:range==='3M'?90:365;
+  rawSeries=candles1d.slice(-daysNeed).map(c=>({t:c.t,v:Number(c.c)}));
+ }
  const points=liveQuote&&rawSeries.length?[...rawSeries.slice(0,-1),{t:new Date(liveQuote.updatedAt||at).getTime(),v:Number(liveQuote.price)}]:rawSeries;
  const ptCount=Math.max(1,points.length-1);
  const current=liveQuote?Number(liveQuote.price):points.at(-1).v;
@@ -94,7 +104,7 @@ export default function MarketCard({item,category,owned,costBasis,watched,orders
  {[0,1,2,3].map(i=>{const v=hi-(hi-lo)*i/3,y=Y(v);return <g key={i}><line x1="8" x2="262" y1={y} y2={y} stroke="#e1e7ed" strokeDasharray="3 3"/><text x="270" y={y+4} fontSize="9" fill="#64748b">{money(v)}</text></g>})}
  <path d={`${line} L262,124 L8,124 Z`} fill={`url(#${id})`}/><path d={line} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round"/>
  <line x1={X(activeIdx)} x2={X(activeIdx)} y1="12" y2="124" stroke={color} strokeDasharray="3 3"/><circle cx={X(activeIdx)} cy={Y(selected.v)} r="3" fill={color}/>
- {[0,.5,1].map((f,i)=><text key={i} x={8+254*f} y="145" textAnchor={i===0?'start':i===2?'end':'middle'} fontSize="9" fill="#64748b">{new Date((points[Math.round(ptCount*f)]||selected).t).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</text>)}
+ {[0,.5,1].map((f,i)=>{const d=new Date((points[Math.round(ptCount*f)]||selected).t);const lbl=range==='1D'?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString('en-US',range==='1Y'?{month:'short',year:'2-digit'}:{month:'short',day:'numeric'});return <text key={i} x={8+254*f} y="145" textAnchor={i===0?'start':i===2?'end':'middle'} fontSize="9" fill="#64748b">{lbl}</text>})}
  </svg><p className="muted">Simulated market · hourly price changes {item.dividend?' · Dividend '+money(item.dividend)+'/hr per share':''}</p>
  {tier&&<div style={{margin:'8px 0 12px',padding:'10px 12px',background:'#f8fafc',borderRadius:10,border:'1px solid #e2e8f0'}}>
    <div className="line"><span className="eyebrow">OWNERSHIP &amp; ACQUISITION</span><span className="tag">{tier.tier}</span></div>

@@ -241,7 +241,8 @@ const marketQuoteSchema = new mongoose.Schema({
     tickId: { type: Number, required: true },
     updatedAt: { type: Date, required: true },
     candles: { type: [mongoose.Schema.Types.Mixed], default: [] },
-    candles1h: { type: [mongoose.Schema.Types.Mixed], default: [] }
+    candles1h: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    candles1d: { type: [mongoose.Schema.Types.Mixed], default: [] }
 });
 const MarketQuote = mongoose.model('MarketQuote', marketQuoteSchema);
 
@@ -1725,6 +1726,34 @@ app.post(
 let marketCache = null;
 let marketAdvancePromise = null;
 
+function seedDailyCandles(item, cat, now, endPrice) {
+    const days = 365;
+    const arr = [];
+    let p = String(item.price);
+    const startDay = Math.floor(now / 86400000) - days;
+    for (let i = 0; i < days; i++) {
+        const tk = startDay + i;
+        const tAt = tk * 86400000;
+        p = stepMarketPrice({
+            prevPrice: p,
+            anchorPrice: item.price,
+            category: cat,
+            symbol: item.id,
+            tickId: tk + 900000,
+            secretKey: secret,
+            t: tAt
+        });
+        arr.push({ t: tAt, o: Number(p), h: Number(p), l: Number(p), c: Number(p) });
+    }
+    if (endPrice !== undefined && arr.length) {
+        const ep = Number(endPrice);
+        arr[arr.length - 1].c = ep;
+        arr[arr.length - 1].h = Math.max(arr[arr.length - 1].h, ep);
+        arr[arr.length - 1].l = Math.min(arr[arr.length - 1].l, ep);
+    }
+    return arr;
+}
+
 function seedHourlyCandles(item, cat, now, endPrice) {
     const hours = 168;
     const arr = [];
@@ -1775,16 +1804,22 @@ async function ensureMarketLoaded(now) {
                     tickId,
                     updatedAt: new Date(now),
                     candles: updateCandles([], pStr, now, 60000),
-                    candles1h: seedHourlyCandles(item, cat, now, pStr)
+                    candles1h: seedHourlyCandles(item, cat, now, pStr),
+                    candles1d: seedDailyCandles(item, cat, now, pStr)
                 };
                 toInsert.push(doc);
                 bySym.set(item.id, doc);
-            } else if (!existing.candles1h || existing.candles1h.length < 2) {
-                existing.candles1h = seedHourlyCandles(item, cat, now, existing.price);
+            } else if (!existing.candles1h || existing.candles1h.length < 2 || !existing.candles1d || existing.candles1d.length < 30) {
+                if (!existing.candles1h || existing.candles1h.length < 2) {
+                    existing.candles1h = seedHourlyCandles(item, cat, now, existing.price);
+                }
+                if (!existing.candles1d || existing.candles1d.length < 30) {
+                    existing.candles1d = seedDailyCandles(item, cat, now, existing.price);
+                }
                 backfillOps.push({
                     updateOne: {
                         filter: { symbol: item.id },
-                        update: { $set: { candles1h: existing.candles1h } }
+                        update: { $set: { candles1h: existing.candles1h, candles1d: existing.candles1d } }
                     }
                 });
             }
@@ -1817,6 +1852,7 @@ async function advanceMarketTo(now = Date.now()) {
             let cur = q.price;
             let candles = q.candles || [];
             let candles1h = q.candles1h || [];
+            let candles1d = q.candles1d || [];
             const prevHourPrice = q.prevPrice || q.price;
 
             for (let tk = startTick; tk <= targetTick; tk++) {
@@ -1832,6 +1868,16 @@ async function advanceMarketTo(now = Date.now()) {
                 });
                 candles = updateCandles(candles, cur, tAt, 60000);
                 candles1h = updateCandles(candles1h, cur, tAt, 3600000);
+                const bucket1d = Math.floor(tAt / 86400000) * 86400000;
+                const lastD = candles1d[candles1d.length - 1];
+                const pNum = Number(cur);
+                if (lastD && lastD.t === bucket1d) {
+                    lastD.h = Math.max(lastD.h, pNum);
+                    lastD.l = Math.min(lastD.l, pNum);
+                    lastD.c = pNum;
+                } else {
+                    candles1d = [...candles1d, { t: bucket1d, o: pNum, h: pNum, l: pNum, c: pNum }].slice(-365);
+                }
             }
 
             q.prevPrice = prevHourPrice;
@@ -1840,6 +1886,7 @@ async function advanceMarketTo(now = Date.now()) {
             q.updatedAt = new Date(now);
             q.candles = candles;
             q.candles1h = candles1h;
+            q.candles1d = candles1d;
             triggeredSymbols.add(q.symbol);
 
             ops.push({
@@ -1852,7 +1899,8 @@ async function advanceMarketTo(now = Date.now()) {
                             tickId: targetTick,
                             updatedAt: q.updatedAt,
                             candles,
-                            candles1h
+                            candles1h,
+                            candles1d
                         }
                     }
                 }
@@ -1961,7 +2009,8 @@ app.get(
             tickId: q.tickId,
             updatedAt: q.updatedAt,
             candles: q.candles || [],
-            candles1h: q.candles1h || []
+            candles1h: q.candles1h || [],
+            candles1d: q.candles1d || []
         });
     })
 );
