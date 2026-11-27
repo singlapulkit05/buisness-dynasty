@@ -20,6 +20,13 @@ import {
 } from '../shared/engine.js';
 
 import { catalog } from '../shared/catalog.js';
+import {
+    FEEDBACK_STATUSES,
+    FEEDBACK_PRIORITIES,
+    validateFeedbackInput,
+    validateFeedbackMessage,
+    escapeRegex
+} from '../shared/feedback.js';
 
 // Environment configuration
 
@@ -149,6 +156,55 @@ const Coupon = mongoose.model(
     )
 );
 
+const Counter = mongoose.model(
+    'Counter',
+    new mongoose.Schema({
+        _id: String,
+        seq: { type: Number, default: 0 }
+    })
+);
+
+const feedbackSchema = new mongoose.Schema(
+    {
+        publicTicketId: { type: String, unique: true, required: true },
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+        usernameSnapshot: { type: String, required: true },
+        category: { type: String, required: true },
+        subject: { type: String, required: true },
+        description: { type: String, required: true },
+        reportedSeverity: { type: String, default: null },
+        adminPriority: { type: String, default: 'normal' },
+        status: { type: String, default: 'new', index: true },
+        relatedRoute: { type: String, default: null },
+        diagnostics: { type: mongoose.Schema.Types.Mixed, default: null },
+        clientRequestId: { type: String, required: true },
+        lastPlayerReadAt: { type: Date, default: Date.now },
+        lastAdminReadAt: { type: Date, default: null },
+        lastAdminReplyAt: { type: Date, default: null },
+        archivedAt: { type: Date, default: null },
+        auditLog: { type: [mongoose.Schema.Types.Mixed], default: [] }
+    },
+    { timestamps: true }
+);
+feedbackSchema.index({ userId: 1, clientRequestId: 1 }, { unique: true });
+feedbackSchema.index({ status: 1, createdAt: -1 });
+feedbackSchema.index({ category: 1, createdAt: -1 });
+feedbackSchema.index({ archivedAt: 1, createdAt: -1 });
+const Feedback = mongoose.model('Feedback', feedbackSchema);
+
+const feedbackMessageSchema = new mongoose.Schema(
+    {
+        feedbackId: { type: mongoose.Schema.Types.ObjectId, ref: 'Feedback', required: true, index: true },
+        authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        authorUsername: { type: String, required: true },
+        authorRole: { type: String, enum: ['player', 'admin'], required: true },
+        body: { type: String, required: true },
+        visibility: { type: String, enum: ['player', 'internal'], default: 'player' }
+    },
+    { timestamps: true }
+);
+const FeedbackMessage = mongoose.model('FeedbackMessage', feedbackMessageSchema);
+
 let readyPromise;
 async function ensureReady() {
     if (!readyPromise) {
@@ -161,6 +217,9 @@ async function ensureReady() {
             }
             await User.init();
             await Coupon.init();
+            await Counter.init();
+            await Feedback.init();
+            await FeedbackMessage.init();
 
             if (
                 process.env.ADMIN_USERNAME &&
@@ -247,6 +306,20 @@ const loginLimit = rateLimit({
 const couponLimit = rateLimit({
     windowMs: 60000,
     limit: 15
+});
+
+const feedbackCreateLimit = rateLimit({
+    windowMs: 3600000,
+    limit: 5,
+    keyGenerator: req => String(req.user?._id || req.ip),
+    message: { error: 'Too many feedback submissions. Please try again later.' }
+});
+
+const feedbackMsgLimit = rateLimit({
+    windowMs: 3600000,
+    limit: 20,
+    keyGenerator: req => String(req.user?._id || req.ip),
+    message: { error: 'Too many follow-up messages. Please try again later.' }
 });
 
 // Authentication cookie
@@ -998,6 +1071,318 @@ app.get(
             .sort((a, b) => b.netWorth - a.netWorth)
             .slice(0, 25);
         res.json(rows);
+    })
+);
+
+// Player & Admin Feedback API
+
+const serializePlayerTicket = t => ({
+    _id: t._id,
+    publicTicketId: t.publicTicketId,
+    category: t.category,
+    subject: t.subject,
+    description: t.description,
+    reportedSeverity: t.reportedSeverity,
+    status: t.status,
+    relatedRoute: t.relatedRoute,
+    diagnostics: t.diagnostics,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    unreadReply: Boolean(
+        t.lastAdminReplyAt &&
+        (!t.lastPlayerReadAt || new Date(t.lastAdminReplyAt) > new Date(t.lastPlayerReadAt))
+    )
+});
+
+app.post(
+    '/api/feedback',
+    auth,
+    feedbackCreateLimit,
+    wrap(async (req, res) => {
+        const data = validateFeedbackInput(req.body);
+        const existing = await Feedback.findOne({
+            userId: req.user._id,
+            clientRequestId: data.clientRequestId
+        }).lean();
+        if (existing) {
+            return res.json(serializePlayerTicket(existing));
+        }
+
+        const ctr = await Counter.findByIdAndUpdate(
+            'feedback',
+            { $inc: { seq: 1 } },
+            { upsert: true, new: true }
+        );
+        const publicTicketId = `FB-${String(ctr.seq).padStart(6, '0')}`;
+
+        const created = await Feedback.create({
+            publicTicketId,
+            userId: req.user._id,
+            usernameSnapshot: req.user.username,
+            ...data,
+            status: 'new',
+            adminPriority: 'normal',
+            lastPlayerReadAt: new Date(),
+            auditLog: [{ actor: req.user.username, action: 'created', from: null, to: 'new', at: new Date() }]
+        });
+        res.status(201).json(serializePlayerTicket(created));
+    })
+);
+
+app.get(
+    '/api/feedback/me',
+    auth,
+    wrap(async (req, res) => {
+        const tickets = await Feedback.find({
+            userId: req.user._id,
+            archivedAt: null
+        }).sort({ updatedAt: -1 }).limit(50).lean();
+        res.json(tickets.map(serializePlayerTicket));
+    })
+);
+
+app.get(
+    '/api/feedback/:id',
+    auth,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const ticket = await Feedback.findOneAndUpdate(
+            { _id: req.params.id, userId: req.user._id, archivedAt: null },
+            { $set: { lastPlayerReadAt: new Date() } },
+            { new: true }
+        ).lean();
+        if (!ticket) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const messages = await FeedbackMessage.find({
+            feedbackId: ticket._id,
+            visibility: 'player'
+        }).sort({ createdAt: 1 }).lean();
+        res.json({
+            ticket: serializePlayerTicket(ticket),
+            messages: messages.map(m => ({
+                _id: m._id,
+                authorRole: m.authorRole,
+                authorUsername: m.authorRole === 'admin' ? 'Admin' : m.authorUsername,
+                body: m.body,
+                createdAt: m.createdAt
+            }))
+        });
+    })
+);
+
+app.post(
+    '/api/feedback/:id/messages',
+    auth,
+    feedbackMsgLimit,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const body = validateFeedbackMessage(req.body?.body);
+        const ticket = await Feedback.findOne({
+            _id: req.params.id,
+            userId: req.user._id,
+            archivedAt: null
+        });
+        if (!ticket) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        if (ticket.status === 'closed') {
+            return res.status(400).json({ error: 'This ticket is closed' });
+        }
+        const msg = await FeedbackMessage.create({
+            feedbackId: ticket._id,
+            authorId: req.user._id,
+            authorUsername: req.user.username,
+            authorRole: 'player',
+            body,
+            visibility: 'player'
+        });
+        ticket.lastPlayerReadAt = new Date();
+        ticket.updatedAt = new Date();
+        await ticket.save();
+        res.status(201).json({
+            _id: msg._id,
+            authorRole: msg.authorRole,
+            authorUsername: msg.authorUsername,
+            body: msg.body,
+            createdAt: msg.createdAt
+        });
+    })
+);
+
+app.get(
+    '/api/admin/feedback',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        const {
+            q = '',
+            status = 'all',
+            category = 'all',
+            priority = 'all',
+            archived = 'false',
+            sort = 'newest',
+            page = '1',
+            limit = '20'
+        } = req.query;
+
+        const filter = {};
+        filter.archivedAt = archived === 'true' ? { $ne: null } : null;
+        if (status !== 'all' && FEEDBACK_STATUSES.includes(String(status))) {
+            filter.status = String(status);
+        }
+        if (category !== 'all') {
+            filter.category = String(category);
+        }
+        if (priority !== 'all' && FEEDBACK_PRIORITIES.includes(String(priority))) {
+            filter.adminPriority = String(priority);
+        }
+        const cleanQ = String(q).trim();
+        if (cleanQ) {
+            const rx = new RegExp(escapeRegex(cleanQ), 'i');
+            filter.$or = [
+                { publicTicketId: rx },
+                { usernameSnapshot: rx },
+                { subject: rx }
+            ];
+        }
+
+        const pNum = Math.max(1, Number(page) || 1);
+        const lim = Math.min(50, Math.max(1, Number(limit) || 20));
+        const sortSpec = sort === 'oldest' ? { createdAt: 1 } : { createdAt: -1 };
+
+        const [items, total, aggCounts] = await Promise.all([
+            Feedback.find(filter).sort(sortSpec).skip((pNum - 1) * lim).limit(lim).lean(),
+            Feedback.countDocuments(filter),
+            Feedback.aggregate([
+                { $match: { archivedAt: null } },
+                { $group: { _id: '$status', count: { $sum: 1 } } }
+            ])
+        ]);
+
+        const counts = { new: 0, in_review: 0, planned: 0, resolved: 0, closed: 0 };
+        for (const row of aggCounts) {
+            if (row._id in counts) counts[row._id] = row.count;
+        }
+
+        res.json({
+            items: items.map(t => ({
+                ...t,
+                unreadByAdmin: !t.lastAdminReadAt || new Date(t.updatedAt) > new Date(t.lastAdminReadAt)
+            })),
+            total,
+            page: pNum,
+            pages: Math.max(1, Math.ceil(total / lim)),
+            counts
+        });
+    })
+);
+
+app.get(
+    '/api/admin/feedback/:id',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const ticket = await Feedback.findByIdAndUpdate(
+            req.params.id,
+            { $set: { lastAdminReadAt: new Date() } },
+            { new: true }
+        ).lean();
+        if (!ticket) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const messages = await FeedbackMessage.find({ feedbackId: ticket._id }).sort({ createdAt: 1 }).lean();
+        res.json({ ticket, messages });
+    })
+);
+
+app.patch(
+    '/api/admin/feedback/:id',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const ticket = await Feedback.findById(req.params.id);
+        if (!ticket) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const now = new Date();
+        if (req.body.status !== undefined) {
+            if (!FEEDBACK_STATUSES.includes(req.body.status)) {
+                throw Error('Invalid status');
+            }
+            if (ticket.status !== req.body.status) {
+                ticket.auditLog.push({ actor: req.user.username, action: 'status', from: ticket.status, to: req.body.status, at: now });
+                ticket.status = req.body.status;
+            }
+        }
+        if (req.body.adminPriority !== undefined) {
+            if (!FEEDBACK_PRIORITIES.includes(req.body.adminPriority)) {
+                throw Error('Invalid priority');
+            }
+            if (ticket.adminPriority !== req.body.adminPriority) {
+                ticket.auditLog.push({ actor: req.user.username, action: 'priority', from: ticket.adminPriority, to: req.body.adminPriority, at: now });
+                ticket.adminPriority = req.body.adminPriority;
+            }
+        }
+        if (req.body.archived !== undefined) {
+            const wantArch = Boolean(req.body.archived);
+            ticket.archivedAt = wantArch ? now : null;
+            ticket.auditLog.push({ actor: req.user.username, action: wantArch ? 'archive' : 'unarchive', from: null, to: wantArch ? 'archived' : 'active', at: now });
+        }
+        if (req.body.markRead === true) {
+            ticket.lastAdminReadAt = now;
+        } else if (req.body.markRead === false) {
+            ticket.lastAdminReadAt = null;
+        }
+        await ticket.save();
+        res.json(ticket);
+    })
+);
+
+app.post(
+    '/api/admin/feedback/:id/messages',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const body = validateFeedbackMessage(req.body?.body);
+        const visibility = req.body?.visibility === 'internal' ? 'internal' : 'player';
+        const ticket = await Feedback.findById(req.params.id);
+        if (!ticket) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+        const msg = await FeedbackMessage.create({
+            feedbackId: ticket._id,
+            authorId: req.user._id,
+            authorUsername: req.user.username,
+            authorRole: 'admin',
+            body,
+            visibility
+        });
+        const now = new Date();
+        ticket.lastAdminReadAt = now;
+        if (visibility === 'player') {
+            ticket.lastAdminReplyAt = now;
+            if (ticket.status === 'new') {
+                ticket.auditLog.push({ actor: req.user.username, action: 'status', from: 'new', to: 'in_review', at: now });
+                ticket.status = 'in_review';
+            }
+        }
+        ticket.auditLog.push({ actor: req.user.username, action: visibility === 'internal' ? 'internal_note' : 'reply', from: null, to: visibility, at: now });
+        await ticket.save();
+        res.status(201).json(msg);
     })
 );
 
