@@ -19,7 +19,8 @@ import {
     netWorth
 } from '../shared/engine.js';
 
-import { catalog } from '../shared/catalog.js';
+import { catalog, stockTotalShares } from '../shared/catalog.js';
+import { MARKET_CONFIG, stepMarketPrice, updateCandles } from '../shared/market-engine.js';
 import {
     FEEDBACK_STATUSES,
     FEEDBACK_PRIORITIES,
@@ -205,6 +206,18 @@ const feedbackMessageSchema = new mongoose.Schema(
 );
 const FeedbackMessage = mongoose.model('FeedbackMessage', feedbackMessageSchema);
 
+const marketQuoteSchema = new mongoose.Schema({
+    symbol: { type: String, unique: true, required: true },
+    category: { type: String, enum: ['stocks', 'crypto'], required: true },
+    anchorPrice: { type: Number, required: true },
+    price: { type: String, required: true },
+    prevPrice: { type: String, required: true },
+    tickId: { type: Number, required: true },
+    updatedAt: { type: Date, required: true },
+    candles: { type: [mongoose.Schema.Types.Mixed], default: [] }
+});
+const MarketQuote = mongoose.model('MarketQuote', marketQuoteSchema);
+
 let readyPromise;
 async function ensureReady() {
     if (!readyPromise) {
@@ -220,6 +233,7 @@ async function ensureReady() {
             await Counter.init();
             await Feedback.init();
             await FeedbackMessage.init();
+            await MarketQuote.init();
 
             if (
                 process.env.ADMIN_USERNAME &&
@@ -1383,6 +1397,389 @@ app.post(
         ticket.auditLog.push({ actor: req.user.username, action: visibility === 'internal' ? 'internal_note' : 'reply', from: null, to: visibility, at: now });
         await ticket.save();
         res.status(201).json(msg);
+    })
+);
+
+// Authoritative Shared Market Engine (Phase 3)
+
+let marketCache = null;
+let marketAdvancePromise = null;
+
+async function ensureMarketLoaded(now) {
+    if (marketCache) return marketCache;
+    const docs = await MarketQuote.find().lean();
+    const bySym = new Map(docs.map(d => [d.symbol, d]));
+    const toInsert = [];
+    for (const cat of ['stocks', 'crypto']) {
+        const tickMs = cat === 'crypto' ? MARKET_CONFIG.CRYPTO_TICK_MS : MARKET_CONFIG.STOCK_TICK_MS;
+        const tickId = Math.floor(now / tickMs);
+        for (const item of catalog[cat]) {
+            if (!bySym.has(item.id)) {
+                const pStr = String(item.price);
+                const doc = {
+                    symbol: item.id,
+                    category: cat,
+                    anchorPrice: item.price,
+                    price: pStr,
+                    prevPrice: pStr,
+                    tickId,
+                    updatedAt: new Date(now),
+                    candles: updateCandles([], pStr, now, 60000)
+                };
+                toInsert.push(doc);
+                bySym.set(item.id, doc);
+            }
+        }
+    }
+    if (toInsert.length) {
+        await MarketQuote.insertMany(toInsert, { ordered: false }).catch(() => {});
+    }
+    marketCache = bySym;
+    return marketCache;
+}
+
+async function advanceMarketTo(now = Date.now()) {
+    if (marketAdvancePromise) return marketAdvancePromise;
+    marketAdvancePromise = (async () => {
+        const cache = await ensureMarketLoaded(now);
+        const ops = [];
+        const triggeredSymbols = new Set();
+
+        for (const q of cache.values()) {
+            const tickMs = q.category === 'crypto' ? MARKET_CONFIG.CRYPTO_TICK_MS : MARKET_CONFIG.STOCK_TICK_MS;
+            const targetTick = Math.floor(now / tickMs);
+            if (targetTick <= q.tickId) continue;
+
+            const steps = Math.min(360, targetTick - q.tickId);
+            const startTick = targetTick - steps + 1;
+            let cur = q.price;
+            let candles = q.candles || [];
+            const prevHourPrice = q.prevPrice || q.price;
+
+            for (let tk = startTick; tk <= targetTick; tk++) {
+                const tAt = tk * tickMs;
+                cur = stepMarketPrice({
+                    prevPrice: cur,
+                    anchorPrice: q.anchorPrice,
+                    category: q.category,
+                    symbol: q.symbol,
+                    tickId: tk,
+                    secretKey: secret,
+                    t: tAt
+                });
+                candles = updateCandles(candles, cur, tAt, 60000);
+            }
+
+            q.prevPrice = prevHourPrice;
+            q.price = cur;
+            q.tickId = targetTick;
+            q.updatedAt = new Date(now);
+            q.candles = candles;
+            triggeredSymbols.add(q.symbol);
+
+            ops.push({
+                updateOne: {
+                    filter: { symbol: q.symbol },
+                    update: {
+                        $set: {
+                            price: cur,
+                            prevPrice: q.prevPrice,
+                            tickId: targetTick,
+                            updatedAt: q.updatedAt,
+                            candles
+                        }
+                    }
+                }
+            });
+        }
+
+        if (ops.length) {
+            await MarketQuote.bulkWrite(ops, { ordered: false });
+            // Settle any server-accepted pending limit/stop orders on affected symbols
+            const usersWithOrders = await User.find({ 'state.orders.0': { $exists: true } });
+            for (const u of usersWithOrders) {
+                const st = normalizeState(u.state);
+                let changed = false;
+                const remaining = [];
+                for (const ord of st.orders || []) {
+                    const liveQ = cache.get(ord.item);
+                    if (!liveQ || !triggeredSymbols.has(ord.item)) {
+                        remaining.push(ord);
+                        continue;
+                    }
+                    const curPrice = new Decimal(liveQ.price);
+                    const targetP = new Decimal(ord.targetPrice);
+                    const triggered = ord.side === 'buy'
+                        ? (ord.kind === 'limit' ? curPrice.lte(targetP) : curPrice.gte(targetP))
+                        : (ord.kind === 'limit' ? curPrice.gte(targetP) : curPrice.lte(targetP));
+                    if (triggered) {
+                        changed = true;
+                        if (ord.side === 'buy') {
+                            const actualCost = curPrice.times(ord.qty);
+                            const refund = targetP.times(ord.qty).minus(actualCost);
+                            if (refund.gt(0)) st.cash = new Decimal(st.cash).plus(refund).toString();
+                            st.holdings[ord.item] = (st.holdings[ord.item] || 0) + ord.qty;
+                            st.costBasis[ord.item] = new Decimal(st.costBasis[ord.item] || '0').plus(actualCost).toString();
+                        } else {
+                            st.cash = new Decimal(st.cash).plus(curPrice.times(ord.qty)).toString();
+                        }
+                        st.ledger = [{
+                            id: `ord-${ord.id}`,
+                            at: now,
+                            type: `order_${ord.side}`,
+                            category: 'invest',
+                            source: ord.item,
+                            amount: ord.side === 'buy' ? '0' : curPrice.times(ord.qty).toString(),
+                            prevCash: st.cash,
+                            newCash: st.cash
+                        }, ...(st.ledger || [])].slice(0, 200);
+                    } else {
+                        remaining.push(ord);
+                    }
+                }
+                if (changed) {
+                    st.orders = remaining;
+                    u.state = st;
+                    u.version = (u.version || 0) + 1;
+                    u.markModified('state');
+                    await u.save();
+                }
+            }
+        }
+        return cache;
+    })().finally(() => {
+        marketAdvancePromise = null;
+    });
+    return marketAdvancePromise;
+}
+
+function serializeQuotes(cache) {
+    const out = {};
+    for (const q of cache.values()) {
+        const cur = Number(q.price);
+        const prv = Number(q.prevPrice || q.price);
+        out[q.symbol] = {
+            price: q.price,
+            prevPrice: q.prevPrice,
+            tickId: q.tickId,
+            updatedAt: q.updatedAt,
+            changePct: prv > 0 ? ((cur / prv - 1) * 100) : 0
+        };
+    }
+    return out;
+}
+
+app.get(
+    '/api/market/quotes',
+    wrap(async (req, res) => {
+        const now = Date.now();
+        const cache = await advanceMarketTo(now);
+        res.json({ t: now, quotes: serializeQuotes(cache) });
+    })
+);
+
+app.get(
+    '/api/market/history/:category/:symbol',
+    wrap(async (req, res) => {
+        const now = Date.now();
+        const cache = await advanceMarketTo(now);
+        const q = cache.get(req.params.symbol);
+        if (!q || q.category !== req.params.category) {
+            return res.status(404).json({ error: 'Symbol not found' });
+        }
+        res.json({
+            symbol: q.symbol,
+            category: q.category,
+            price: q.price,
+            prevPrice: q.prevPrice,
+            tickId: q.tickId,
+            updatedAt: q.updatedAt,
+            candles: q.candles || []
+        });
+    })
+);
+
+app.get(
+    '/api/market/stream',
+    auth,
+    wrap(async (req, res) => {
+        res.set({
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive'
+        });
+        res.flushHeaders?.();
+
+        let closed = false;
+        const push = async () => {
+            if (closed) return;
+            try {
+                const now = Date.now();
+                const cache = await advanceMarketTo(now);
+                res.write(`data: ${JSON.stringify({ t: now, quotes: serializeQuotes(cache) })}\n\n`);
+            } catch {
+                // Keep stream alive on transient DB error
+            }
+        };
+
+        await push();
+        const iv = setInterval(push, 5000);
+        req.on('close', () => {
+            closed = true;
+            clearInterval(iv);
+        });
+    })
+);
+
+app.post(
+    '/api/market/trade',
+    auth,
+    wrap(async (req, res) => {
+        const now = Date.now();
+        const cache = await advanceMarketTo(now);
+        const { category, item: symbol, qty, sell } = req.body || {};
+        if (!['stocks', 'crypto'].includes(category)) {
+            throw Error('Invalid market category');
+        }
+        if (!Number.isSafeInteger(qty) || qty < 1 || qty > 1000000) {
+            throw Error('Invalid quantity');
+        }
+        const item = catalog[category].find(x => x.id === symbol);
+        const liveQ = cache.get(symbol);
+        if (!item || !liveQ) throw Error('Unknown symbol');
+
+        const s = settle(req.user.state, now, catalog);
+        const prevCash = s.cash;
+        const unitPrice = new Decimal(liveQ.price);
+        const owned = s.holdings[symbol] || 0;
+
+        if (sell) {
+            if (owned < qty) throw Error('Not enough owned');
+            s.holdings[symbol] = owned - qty;
+            const prevCost = new Decimal(s.costBasis[symbol] || '0');
+            s.costBasis[symbol] = owned - qty === 0
+                ? '0'
+                : prevCost.times(owned - qty).div(owned).toString();
+            s.cash = new Decimal(s.cash).plus(unitPrice.times(qty)).toString();
+        } else {
+            if (category === 'stocks') {
+                const total = stockTotalShares(item);
+                const reservedBuy = (s.orders || []).filter(o => o.item === symbol && o.side === 'buy').reduce((sum, o) => sum + o.qty, 0);
+                if (owned + reservedBuy + qty > total) {
+                    throw Error(`Only ${Math.max(0, total - owned - reservedBuy)} shares available`);
+                }
+            }
+            const cost = unitPrice.times(qty);
+            if (new Decimal(s.cash).lt(cost)) throw Error('Insufficient funds');
+            s.cash = new Decimal(s.cash).minus(cost).toString();
+            s.costBasis[symbol] = new Decimal(s.costBasis[symbol] || '0').plus(cost).toString();
+            s.holdings[symbol] = owned + qty;
+        }
+
+        const delta = new Decimal(s.cash).minus(prevCash);
+        s.ledger = [{
+            id: `mkt-${now}-${Math.random().toString(36).slice(2, 7)}`,
+            at: now,
+            type: sell ? 'market_sell' : 'market_buy',
+            category: 'invest',
+            source: item.name,
+            amount: delta.toString(),
+            prevCash,
+            newCash: s.cash
+        }, ...(s.ledger || [])].slice(0, 200);
+
+        req.user.state = s;
+        req.user.version = (req.user.version || 0) + 1;
+        req.user.markModified('state');
+        await req.user.save();
+
+        res.json({ cloud: snapshot(req.user), fill: { symbol, qty, sell: Boolean(sell), price: liveQ.price } });
+    })
+);
+
+app.post(
+    '/api/market/orders',
+    auth,
+    wrap(async (req, res) => {
+        const now = Date.now();
+        const cache = await advanceMarketTo(now);
+        const { category, item: symbol, side, kind, targetPrice, qty } = req.body || {};
+        if (!['stocks', 'crypto'].includes(category)) throw Error('Invalid market');
+        if (!['buy', 'sell'].includes(side) || !['limit', 'stop'].includes(kind)) throw Error('Invalid order');
+        if (!Number.isSafeInteger(qty) || qty < 1 || qty > 1000000) throw Error('Invalid quantity');
+        const targetP = new Decimal(targetPrice || 0);
+        if (targetP.lte(0)) throw Error('Invalid target price');
+
+        const item = catalog[category].find(x => x.id === symbol);
+        const liveQ = cache.get(symbol);
+        if (!item || !liveQ) throw Error('Unknown symbol');
+
+        const s = settle(req.user.state, now, catalog);
+        if ((s.orders || []).length >= 20) throw Error('Maximum 20 open orders');
+
+        const curPrice = new Decimal(liveQ.price);
+        const triggered = side === 'buy'
+            ? (kind === 'limit' ? curPrice.lte(targetP) : curPrice.gte(targetP))
+            : (kind === 'limit' ? curPrice.gte(targetP) : curPrice.lte(targetP));
+
+        if (side === 'buy') {
+            if (category === 'stocks') {
+                const total = stockTotalShares(item);
+                const owned = s.holdings[symbol] || 0;
+                const reservedBuy = (s.orders || []).filter(o => o.item === symbol && o.side === 'buy').reduce((sum, o) => sum + o.qty, 0);
+                if (owned + reservedBuy + qty > total) throw Error(`Exceeds available share supply (${total})`);
+            }
+            const reserveAmt = targetP.times(qty);
+            if (new Decimal(s.cash).lt(reserveAmt)) throw Error('Insufficient funds');
+            if (triggered) {
+                const actualCost = curPrice.times(qty);
+                s.cash = new Decimal(s.cash).minus(actualCost).toString();
+                s.holdings[symbol] = (s.holdings[symbol] || 0) + qty;
+                s.costBasis[symbol] = new Decimal(s.costBasis[symbol] || '0').plus(actualCost).toString();
+            } else {
+                s.cash = new Decimal(s.cash).minus(reserveAmt).toString();
+                s.orders.push({ id: randomUUID(), category, item: symbol, side, kind, targetPrice: targetP.toString(), qty, at: now });
+            }
+        } else {
+            const owned = s.holdings[symbol] || 0;
+            if (owned < qty) throw Error('Not enough owned');
+            s.holdings[symbol] = owned - qty;
+            const prevCost = new Decimal(s.costBasis[symbol] || '0');
+            s.costBasis[symbol] = owned - qty === 0 ? '0' : prevCost.times(owned - qty).div(owned).toString();
+            if (triggered) {
+                s.cash = new Decimal(s.cash).plus(curPrice.times(qty)).toString();
+            } else {
+                s.orders.push({ id: randomUUID(), category, item: symbol, side, kind, targetPrice: targetP.toString(), qty, at: now });
+            }
+        }
+
+        req.user.state = s;
+        req.user.version = (req.user.version || 0) + 1;
+        req.user.markModified('state');
+        await req.user.save();
+        res.json({ cloud: snapshot(req.user), filled: triggered, price: liveQ.price });
+    })
+);
+
+app.delete(
+    '/api/market/orders/:orderId',
+    auth,
+    wrap(async (req, res) => {
+        const now = Date.now();
+        const s = settle(req.user.state, now, catalog);
+        const ord = (s.orders || []).find(o => o.id === req.params.orderId);
+        if (!ord) return res.status(404).json({ error: 'Order not found' });
+        if (ord.side === 'buy') {
+            s.cash = new Decimal(s.cash).plus(new Decimal(ord.targetPrice).times(ord.qty)).toString();
+        } else {
+            s.holdings[ord.item] = (s.holdings[ord.item] || 0) + ord.qty;
+        }
+        s.orders = s.orders.filter(o => o.id !== ord.id);
+        req.user.state = s;
+        req.user.version = (req.user.version || 0) + 1;
+        req.user.markModified('state');
+        await req.user.save();
+        res.json({ cloud: snapshot(req.user) });
     })
 );
 
