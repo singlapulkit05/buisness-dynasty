@@ -34,6 +34,17 @@ import {
     minNextBid,
     validateListingInput
 } from '../shared/auctions.js';
+import {
+    normalizePrivacy,
+    buildPublicProfileSummary,
+    projectPublicBusinesses,
+    projectPublicBusinessDetail,
+    projectPublicInvestments,
+    projectPublicProperties,
+    projectPublicAssets,
+    projectPublicResearch,
+    projectPublicAchievements
+} from '../shared/public-profile.js';
 
 // Environment configuration
 
@@ -1249,32 +1260,146 @@ app.get(
     })
 );
 
+async function loadPublicPlayer(username) {
+    const target = String(username || '').trim().toLowerCase();
+    const u = await User.findOne(
+        { username: target, role: { $ne: 'admin' } },
+        '_id username state premium premiumUntil privacy'
+    ).lean();
+    if (!u || u.privacy?.showOnLeaderboard === false) return null;
+    return u;
+}
+
 app.get(
     '/api/players/:username/profile',
     auth,
     wrap(async (req, res) => {
-        const target = String(req.params.username || '').trim().toLowerCase();
-        const u = await User.findOne(
-            { username: target, role: { $ne: 'admin' } },
-            'username state premium premiumUntil privacy'
-        ).lean();
-        if (!u || u.privacy?.showOnLeaderboard === false) {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) {
             return res.status(404).json({ error: 'Player profile not found or private' });
         }
-        res.json(buildPublicProfile(u));
+        const liveQuotes = marketCache ? serializeQuotes(marketCache) : null;
+        const activeAucs = await Auction.find({ sellerId: u._id, status: 'active' }).limit(20).lean();
+        res.json(buildPublicProfileSummary(u, { liveQuotes, auctions: activeAucs }));
     })
+);
+
+app.get(
+    '/api/players/:username/businesses',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        res.json(projectPublicBusinesses(u, req.query));
+    })
+);
+
+app.get(
+    '/api/players/:username/businesses/:publicBusinessId',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        const detail = projectPublicBusinessDetail(u, req.params.publicBusinessId);
+        if (!detail) return res.status(404).json({ error: 'Business not found or private' });
+        res.json(detail);
+    })
+);
+
+app.get(
+    '/api/players/:username/investments',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        const liveQuotes = marketCache ? serializeQuotes(marketCache) : null;
+        res.json(projectPublicInvestments(u, { type: req.query.type, liveQuotes }));
+    })
+);
+
+app.get(
+    '/api/players/:username/properties',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        res.json(projectPublicProperties(u, req.query));
+    })
+);
+
+app.get(
+    '/api/players/:username/assets',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        res.json(projectPublicAssets(u, req.query));
+    })
+);
+
+app.get(
+    '/api/players/:username/research',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        res.json(projectPublicResearch(u));
+    })
+);
+
+app.get(
+    '/api/players/:username/achievements',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        res.json(projectPublicAchievements(u));
+    })
+);
+
+app.get(
+    '/api/players/:username/auctions',
+    auth,
+    wrap(async (req, res) => {
+        const u = await loadPublicPlayer(req.params.username);
+        if (!u) return res.status(404).json({ error: 'Player profile not found or private' });
+        await settleExpiredAuctions(Date.now());
+        const list = await Auction.find({
+            sellerId: u._id,
+            status: { $in: ['active', 'sold', 'unsold'] }
+        }).sort({ createdAt: -1 }).limit(24).lean();
+        res.json(list.map(a => serializeAuction(a, req.user._id)));
+    })
+);
+
+app.get(
+    '/api/profile/privacy',
+    auth,
+    (req, res) => {
+        res.json(normalizePrivacy(req.user.privacy));
+    }
 );
 
 app.patch(
     '/api/profile/privacy',
     auth,
     wrap(async (req, res) => {
-        const cur = req.user.privacy || {};
-        const next = {
-            showFinancials: req.body.showFinancials !== undefined ? Boolean(req.body.showFinancials) : cur.showFinancials !== false,
-            showCollections: req.body.showCollections !== undefined ? Boolean(req.body.showCollections) : cur.showCollections !== false,
-            showOnLeaderboard: req.body.showOnLeaderboard !== undefined ? Boolean(req.body.showOnLeaderboard) : cur.showOnLeaderboard !== false
-        };
+        const cur = normalizePrivacy(req.user.privacy);
+        const b = req.body || {};
+        const next = normalizePrivacy({
+            ...cur,
+            showOnLeaderboard: b.showOnLeaderboard !== undefined ? Boolean(b.showOnLeaderboard) : cur.showOnLeaderboard,
+            showFinancials: b.showFinancials !== undefined ? Boolean(b.showFinancials) : cur.showFinancials,
+            showCollections: b.showCollections !== undefined ? Boolean(b.showCollections) : cur.showCollections,
+            showBusinesses: b.showBusinesses !== undefined ? Boolean(b.showBusinesses) : cur.showBusinesses,
+            showInvestments: b.showInvestments !== undefined ? Boolean(b.showInvestments) : cur.showInvestments,
+            showProperties: b.showProperties !== undefined ? Boolean(b.showProperties) : cur.showProperties,
+            showLuxury: b.showLuxury !== undefined ? Boolean(b.showLuxury) : cur.showLuxury,
+            showResearch: b.showResearch !== undefined ? Boolean(b.showResearch) : cur.showResearch,
+            showAchievements: b.showAchievements !== undefined ? Boolean(b.showAchievements) : cur.showAchievements,
+            showVip: b.showVip !== undefined ? Boolean(b.showVip) : cur.showVip,
+            hiddenCategories: b.hiddenCategories !== undefined ? b.hiddenCategories : cur.hiddenCategories
+        });
         req.user.privacy = next;
         req.user.markModified('privacy');
         await req.user.save();

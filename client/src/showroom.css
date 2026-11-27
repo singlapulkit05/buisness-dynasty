@@ -1,0 +1,279 @@
+/* Cinematic Garage, Hangar & Marina Showroom — Light Architectural Theme */
+
+.showroom-header {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.showroom-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+
+.showroom-tabs button {
+  flex: 1;
+  min-width: 90px;
+  margin: 0;
+  min-height: 44px;
+}
+
+.showroom-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+@media (min-width: 1024px) {
+  .showroom-layout {
+    grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+    gap: 18px;
+  }
+}
+
+.showroom-stage-card {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+}
+
+.showroom-scene {
+  position: relative;
+  width: 100%;
+  min-height: 290px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 36px 24px 32px;
+  overflow: hidden;
+  user-select: none;
+  touch-action: pan-y;
+}
+
+@media (min-width: 768px) {
+  .showroom-scene {
+    min-height: 380px;
+    padding: 44px 48px 38px;
+  }
+}
+
+/* Car Showroom: Warm pale stone, frosted glass backdrop & linear ceiling light */
+.scene-cars {
+  background:
+    linear-gradient(180deg, #f8fafc 0%, #eef2f6 52%, #dfe5ec 53%, #cfd7e2 100%);
+}
+.scene-cars::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 12%;
+  right: 12%;
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #ffffff, #f8fafc, transparent);
+  box-shadow: 0 2px 18px 4px rgba(255, 255, 255, 0.9);
+}
+
+/* Aircraft Hangar: High bright bay ceiling, vertical door seams & runway daylight */
+.scene-aircraft {
+  background:
+    repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.08) 0 1px, transparent 1px 110px),
+    linear-gradient(180deg, #eff6ff 0%, #e2e8f0 50%, #cbd5e1 51%, #e2e8f0 100%);
+}
+.scene-aircraft::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 8%;
+  right: 8%;
+  height: 10px;
+  background: linear-gradient(180deg, #94a3b8, transparent);
+  opacity: 0.3;
+}
+
+/* Yacht Marina: Daylight sky, serene water shimmer & limestone dock edge */
+.scene-yachts {
+  background:
+    linear-gradient(180deg, #f0f9ff 0%, #bae6fd 44%, #38bdf8 46%, #0284c7 84%, #e2e8f0 85%, #cbd5e1 100%);
+}
+.scene-yachts::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 46%;
+  height: 38%;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.22) 50%, rgba(255, 255, 255, 0) 100%);
+  pointer-events: none;
+}
+
+.showroom-floor-shadow {
+  position: relative;
+  width: min(82%, 440px);
+  height: 18px;
+  margin-top: -10px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(15, 23, 42, 0.28) 0%, rgba(15, 23, 42, 0.06) 55%, transparent 75%);
+  z-index: 1;
+}
+
+.showroom-vehicle-wrap {
+  position: relative;
+  z-index: 2;
+  width: min(100%, 540px);
+  height: 210px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+@media (min-width: 768px) {
+  .showroom-vehicle-wrap {
+    height: 270px;
+  }
+}
+
+.showroom-vehicle-wrap img {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 12px;
+  padding: 0;
+  background: transparent;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.14);
+}
+
+.showroom-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  z-index: 4;
+  font-size: 20px;
+  display: grid;
+  place-items: center;
+}
+.showroom-nav-btn.prev { left: 10px; }
+.showroom-nav-btn.next { right: 10px; }
+
+.showroom-zoom-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: auto;
+  margin: 0;
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  z-index: 4;
+}
+
+.showroom-counter {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  z-index: 4;
+}
+
+.showroom-rail {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 12px;
+  background: #f8fafc;
+  border-top: 1px solid var(--border);
+  scroll-snap-type: x proximity;
+}
+
+.showroom-thumb {
+  flex: 0 0 84px;
+  width: 84px;
+  margin: 0;
+  padding: 4px;
+  min-height: 60px;
+  background: #ffffff;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  scroll-snap-align: center;
+}
+.showroom-thumb.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  transform: scale(1.03);
+}
+.showroom-thumb img {
+  width: 72px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 6px;
+  padding: 0;
+}
+.showroom-thumb span {
+  font-size: 10px;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 74px;
+}
+
+.showroom-details-card {
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .slide-cars-init { animation: slideInRight 500ms cubic-bezier(.16, 1, .3, 1) both; }
+  .slide-cars-next { animation: slideInRight 360ms cubic-bezier(.16, 1, .3, 1) both; }
+  .slide-cars-prev { animation: slideInLeft 360ms cubic-bezier(.16, 1, .3, 1) both; }
+
+  .slide-aircraft-init, .slide-aircraft-next { animation: glideInRight 620ms cubic-bezier(.16, 1, .3, 1) both; }
+  .slide-aircraft-prev { animation: glideInLeft 620ms cubic-bezier(.16, 1, .3, 1) both; }
+
+  .slide-yachts-init, .slide-yachts-next { animation: glideInRight 520ms ease-out both; }
+  .slide-yachts-prev { animation: glideInLeft 520ms ease-out both; }
+
+  .scene-yachts::after { animation: waterShimmer 6s ease-in-out infinite alternate; }
+  .showroom-detail-fade { animation: fadeQuick 180ms ease-out both; }
+
+  @keyframes slideInRight { from { opacity: 0; transform: translateX(46px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes slideInLeft { from { opacity: 0; transform: translateX(-46px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes glideInRight { from { opacity: 0; transform: translateX(64px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes glideInLeft { from { opacity: 0; transform: translateX(-64px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes waterShimmer { from { opacity: 0.35; transform: translateX(-2%); } to { opacity: 0.75; transform: translateX(2%); } }
+  @keyframes fadeQuick { from { opacity: 0; } to { opacity: 1; } }
+}

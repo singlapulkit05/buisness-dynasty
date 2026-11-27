@@ -36,6 +36,13 @@ export function parseRoute(pathname = '/') {
   if (path === '/assets') {
     return { path, name: 'assets', tab: 'Assets', title: 'Luxury Assets', params: {} };
   }
+  if (path === '/garage') {
+    return { path, name: 'garage', tab: 'Assets', title: 'Showroom — Garage, Hangar & Marina', params: { category: 'cars' } };
+  }
+  if (path.startsWith('/garage/')) {
+    const category = decodeURIComponent(path.slice('/garage/'.length));
+    return { path, name: 'garage', tab: 'Assets', title: 'Showroom — Garage, Hangar & Marina', params: { category } };
+  }
   if (path === '/auctions') {
     return { path, name: 'auctions', tab: 'Auctions', title: 'Asset Auctions', params: {} };
   }
