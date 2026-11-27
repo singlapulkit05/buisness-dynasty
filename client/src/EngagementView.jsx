@@ -9,11 +9,14 @@ const dur = ms => {
   return [Math.floor(n / 3600), Math.floor((n % 3600) / 60), n % 60].map(x => String(x).padStart(2, '0')).join(':');
 };
 
-export default function EngagementView({ s, c, online, act, onBack, initialTab = 'research' }) {
+export default function EngagementView({ s, c, online, act, onBack, onOpenProfile, initialTab = 'research' }) {
   const [sub, setSub] = useState(initialTab);
   const [leaders, setLeaders] = useState([]);
   const [lbErr, setLbErr] = useState('');
   const [lbLoading, setLbLoading] = useState(false);
+  const [searchQ, setSearchQ] = useState('');
+  const [searchResults, setSearchResults] = useState(null);
+  const [searchBusy, setSearchBusy] = useState(false);
 
   const nwNum = Number(netWorth(s, c));
   const achs = evaluateAchievements(s, c, nwNum);
@@ -125,22 +128,54 @@ export default function EngagementView({ s, c, online, act, onBack, initialTab =
       )}
 
       {sub === 'leaderboard' && (
-        <section>
-          <span className="eyebrow">GLOBAL RANKINGS</span>
-          <h3>Top Cloud Empires</h3>
-          {!online && <p className="muted">Connect to the internet to view global player rankings.</p>}
-          {online && lbLoading && <p className="muted">Loading rankings…</p>}
-          {lbErr && <p className="negative">{lbErr}</p>}
-          {online && !lbLoading && leaders.map((p, idx) => (
-            <div key={p.username} className="profile-kv" style={{ alignItems: 'center' }}>
-              <div>
-                <strong>#{idx + 1} {p.username} {p.premium ? '◆' : ''}</strong>
-                <div className="muted" style={{ fontSize: 12 }}>Lv {p.level} · {p.businesses} businesses · {p.achievements} badges</div>
+        <>
+          <section>
+            <span className="eyebrow">PLAYER DISCOVERY</span>
+            <h3>Find a Player</h3>
+            <form className="coupon-form" onSubmit={async e => {
+              e.preventDefault();
+              if (!online || searchQ.trim().length < 2) return;
+              setSearchBusy(true);
+              try {
+                const res = await api('/players/search?q=' + encodeURIComponent(searchQ.trim()));
+                setSearchResults(res.items || []);
+              } catch (err) { setLbErr(err.message); } finally { setSearchBusy(false); }
+            }}>
+              <input type="search" minLength={2} placeholder="Search username (2+ chars)…" value={searchQ} onChange={e => setSearchQ(e.target.value)} />
+              <button className="small" disabled={!online || searchBusy || searchQ.trim().length < 2}>{searchBusy ? '…' : 'Search'}</button>
+            </form>
+            {searchResults && (
+              <div style={{ marginTop: 8 }}>
+                {searchResults.length === 0 ? <p className="muted">No matching players found.</p> : searchResults.map(p => (
+                  <div key={p.username} className="profile-kv" style={{ alignItems: 'center', cursor: onOpenProfile ? 'pointer' : 'default' }} onClick={() => onOpenProfile && onOpenProfile(p.username)}>
+                    <div>
+                      <strong>{p.username} {p.premium ? '◆' : ''}</strong>
+                      <div className="muted" style={{ fontSize: 12 }}>Lv {p.level}</div>
+                    </div>
+                    <strong className="green">{p.netWorth !== null ? money(p.netWorth) : 'Private'} ›</strong>
+                  </div>
+                ))}
               </div>
-              <strong className="green">{money(p.netWorth)}</strong>
-            </div>
-          ))}
-        </section>
+            )}
+          </section>
+
+          <section>
+            <span className="eyebrow">GLOBAL RANKINGS</span>
+            <h3>Top Cloud Empires</h3>
+            {!online && <p className="muted">Connect to the internet to view global player rankings.</p>}
+            {online && lbLoading && <p className="muted">Loading rankings…</p>}
+            {lbErr && <p className="negative">{lbErr}</p>}
+            {online && !lbLoading && leaders.map((p, idx) => (
+              <div key={p.username} className="profile-kv" style={{ alignItems: 'center', cursor: onOpenProfile ? 'pointer' : 'default' }} onClick={() => onOpenProfile && onOpenProfile(p.username)}>
+                <div>
+                  <strong>#{idx + 1} {p.username} {p.premium ? '◆' : ''}</strong>
+                  <div className="muted" style={{ fontSize: 12 }}>Lv {p.level} · {p.businesses} businesses · {p.achievements} badges</div>
+                </div>
+                <strong className="green">{p.netWorth !== null ? money(p.netWorth) : 'Private'} ›</strong>
+              </div>
+            ))}
+          </section>
+        </>
       )}
 
       {sub === 'alerts' && (

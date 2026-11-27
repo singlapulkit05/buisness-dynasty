@@ -45,6 +45,10 @@ export function parseRoute(pathname = '/') {
   if (path === '/leaderboard') {
     return { path, name: 'leaderboard', tab: 'Home', title: 'Global Leaderboard', params: {} };
   }
+  if (path.startsWith('/players/')) {
+    const username = decodeURIComponent(path.slice('/players/'.length));
+    return { path, name: 'player_profile', tab: 'Home', title: `${username} — Profile`, params: { username } };
+  }
   if (path === '/profile') {
     return { path, name: 'profile', tab: 'Profile', title: 'Player Profile', params: {} };
   }

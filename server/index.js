@@ -100,6 +100,15 @@ const User = mongoose.model(
             redeemedCoupons: {
                 type: [String],
                 default: []
+            },
+
+            privacy: {
+                type: mongoose.Schema.Types.Mixed,
+                default: () => ({
+                    showFinancials: true,
+                    showCollections: true,
+                    showOnLeaderboard: true
+                })
             }
         },
         {
@@ -1059,8 +1068,8 @@ app.get(
     auth,
     wrap(async (req, res) => {
         const players = await User.find(
-            { role: { $ne: 'admin' }, state: { $exists: true } },
-            'username state premium premiumUntil'
+            { role: { $ne: 'admin' }, state: { $exists: true }, 'privacy.showOnLeaderboard': { $ne: false } },
+            'username state premium premiumUntil privacy'
         ).lean();
         const now = Date.now();
         const rows = players
@@ -1072,7 +1081,8 @@ app.get(
                     return {
                         username: u.username,
                         level: st.level || 1,
-                        netWorth: nw,
+                        netWorth: u.privacy?.showFinancials === false ? null : nw,
+                        _sortNw: nw,
                         businesses: (st.businesses || []).length,
                         achievements: (st.achievements || []).length,
                         premium: isPrem
@@ -1082,9 +1092,124 @@ app.get(
                 }
             })
             .filter(Boolean)
-            .sort((a, b) => b.netWorth - a.netWorth)
-            .slice(0, 25);
+            .sort((a, b) => b._sortNw - a._sortNw)
+            .slice(0, 25)
+            .map(({ _sortNw, ...rest }) => rest);
         res.json(rows);
+    })
+);
+
+// Public Player Search & Profiles (Phase 4)
+
+const searchLimit = rateLimit({
+    windowMs: 60000,
+    limit: 30,
+    keyGenerator: req => String(req.user?._id || req.ip)
+});
+
+function buildPublicProfile(u) {
+    const st = normalizeState(u.state || initial());
+    const priv = {
+        showFinancials: u.privacy?.showFinancials !== false,
+        showCollections: u.privacy?.showCollections !== false,
+        showOnLeaderboard: u.privacy?.showOnLeaderboard !== false
+    };
+    const now = Date.now();
+    const isPrem = !!u.premium && (!u.premiumUntil || new Date(u.premiumUntil).getTime() > now);
+    const nw = Number(netWorth(st, catalog));
+    const investVal = [...catalog.stocks, ...catalog.crypto].reduce(
+        (sum, x) => sum + Number(x.price) * (st.holdings?.[x.id] || 0),
+        0
+    );
+    const propCount = Object.values(st.properties || {}).reduce((a, b) => a + b, 0);
+    const assetCount = Object.values(st.assets || {}).reduce((a, b) => a + b, 0);
+
+    return {
+        username: u.username,
+        level: st.level || 1,
+        premium: isPrem,
+        netWorth: priv.showFinancials ? nw : null,
+        investVal: priv.showFinancials ? investVal : null,
+        businessesCount: (st.businesses || []).length,
+        businesses: (st.businesses || []).map(b => ({
+            name: b.name || b.type,
+            type: b.type,
+            level: b.level,
+            branches: (b.branches || []).length
+        })),
+        propertiesCount: priv.showCollections ? propCount : null,
+        assetsCount: priv.showCollections ? assetCount : null,
+        achievementsCount: (st.achievements || []).length,
+        researchCount: (st.research?.completed || []).length,
+        snapshotAt: st.at || null
+    };
+}
+
+app.get(
+    '/api/players/search',
+    auth,
+    searchLimit,
+    wrap(async (req, res) => {
+        const q = String(req.query.q || '').trim().toLowerCase();
+        if (q.length < 2) {
+            return res.json({ items: [] });
+        }
+        const rx = new RegExp('^' + escapeRegex(q), 'i');
+        const users = await User.find(
+            {
+                role: { $ne: 'admin' },
+                username: rx,
+                'privacy.showOnLeaderboard': { $ne: false }
+            },
+            'username state premium premiumUntil privacy'
+        ).limit(15).lean();
+
+        const now = Date.now();
+        res.json({
+            items: users.map(u => {
+                const st = normalizeState(u.state || initial());
+                const isPrem = !!u.premium && (!u.premiumUntil || new Date(u.premiumUntil).getTime() > now);
+                return {
+                    username: u.username,
+                    level: st.level || 1,
+                    premium: isPrem,
+                    netWorth: u.privacy?.showFinancials === false ? null : Number(netWorth(st, catalog))
+                };
+            })
+        });
+    })
+);
+
+app.get(
+    '/api/players/:username/profile',
+    auth,
+    wrap(async (req, res) => {
+        const target = String(req.params.username || '').trim().toLowerCase();
+        const u = await User.findOne(
+            { username: target, role: { $ne: 'admin' } },
+            'username state premium premiumUntil privacy'
+        ).lean();
+        if (!u || u.privacy?.showOnLeaderboard === false) {
+            return res.status(404).json({ error: 'Player profile not found or private' });
+        }
+        res.json(buildPublicProfile(u));
+    })
+);
+
+app.patch(
+    '/api/profile/privacy',
+    auth,
+    wrap(async (req, res) => {
+        const cur = req.user.privacy || {};
+        const next = {
+            showFinancials: req.body.showFinancials !== undefined ? Boolean(req.body.showFinancials) : cur.showFinancials !== false,
+            showCollections: req.body.showCollections !== undefined ? Boolean(req.body.showCollections) : cur.showCollections !== false,
+            showOnLeaderboard: req.body.showOnLeaderboard !== undefined ? Boolean(req.body.showOnLeaderboard) : cur.showOnLeaderboard !== false
+        };
+        req.user.privacy = next;
+        req.user.markModified('privacy');
+        await req.user.save();
+        res.json(next);
     })
 );
 

@@ -19,12 +19,14 @@ export default function MarketCard({item,category,owned,costBasis,watched,orders
  const hours=ranges[range],end=Math.floor(at/3600000)*3600000, count=Math.min(hours,120);
  const basePoints=Array.from({length:count+1},(_,i)=>{const t=end-Math.round(hours*(1-i/count))*3600000;return {t,v:Number(price(item,t))}});
  const points=range==='1D'&&candles.length>=2?candles.map(c=>({t:c.t,v:Number(c.c)})):basePoints;
+ const ptCount=Math.max(1,points.length-1);
  const current=liveQuote?Number(liveQuote.price):points.at(-1).v;
  const first=points[0].v, change=first>0?(current/first-1)*100:0, up=change>=0, color=up?'#087f5b':'#c24141';
  const min=Math.min(...points.map(p=>p.v)),max=Math.max(...points.map(p=>p.v)),pad=Math.max((max-min)*.12,max*.005,.00001),lo=min-pad,hi=max+pad;
- const X=i=>8+i/count*254,Y=v=>12+(hi-v)/(hi-lo)*112;
+ const X=i=>8+i/ptCount*254,Y=v=>12+(hi-v)/(hi-lo)*112;
  const line=points.map((p,i)=>`${i?'L':'M'}${X(i).toFixed(2)},${Y(p.v).toFixed(2)}`).join(' ');
- const selected=points[hover??count]||points[count];
+ const activeIdx=Math.min(ptCount,Math.max(0,hover??ptCount));
+ const selected=points[activeIdx]||points[points.length-1];
  const totalShares=category==='stocks'?stockTotalShares(item):null;
  const reservedShares=(orders||[]).filter(o=>o.side==='buy').reduce((sum,o)=>sum+o.qty,0);
  const maxAvailable=totalShares!==null?Math.max(0,totalShares-owned-reservedShares):1000000;
@@ -64,12 +66,12 @@ export default function MarketCard({item,category,owned,costBasis,watched,orders
  return <section className="market-card"><div className="line"><div className="art-heading"><GameArt id={item.id}/><div><span className="eyebrow">{category==='stocks'?'EQUITY':'DIGITAL ASSET'} · {online&&liveQuote?<span className="green">LIVE</span>:<span className="negative">OFFLINE QUOTE</span>}</span><h3>{item.name}</h3></div></div><div className="line" style={{gap:6}}><button className="secondary small" onClick={()=>act({type:'toggleWatchlist',item:item.id})}>{watched?'★ Watched':'☆ Watch'}</button><span className="tag">{owned.toLocaleString()} owned</span></div></div><div className="market-price">{money(current)}</div><div className={up?'green':'negative'}>{up?'+':''}{change.toFixed(2)}% <span className="muted">· {range}{liveQuote?.updatedAt?` · ${new Date(liveQuote.updatedAt).toLocaleTimeString()}`:''}</span></div>{owned>0&&cost>0&&<div className={pnl>=0?'green':'negative'} style={{fontSize:13,marginTop:4}}>P&amp;L: {pnl>=0?'+':''}{money(pnl)} ({pnl>=0?'+':''}{pnlPct.toFixed(2)}%)</div>}
  <div className="range-tabs">{Object.keys(ranges).map(r=><button key={r} className={range===r?'active':''} onClick={()=>{R(r);H(null)}}>{r}</button>)}</div>
  <div className="chart-readout">{new Date(selected.t).toLocaleString()} · <b>{money(selected.v)}</b></div>
- <svg className="market-chart" viewBox="0 0 350 154" role="img" aria-label={`${item.name} simulated price history over ${range}`} onPointerMove={e=>{const b=e.currentTarget.getBoundingClientRect();H(Math.max(0,Math.min(count,Math.round(((e.clientX-b.left)/b.width*350-8)/254*count))))}} onPointerLeave={()=>H(null)}>
+ <svg className="market-chart" viewBox="0 0 350 154" role="img" aria-label={`${item.name} simulated price history over ${range}`} onPointerMove={e=>{const b=e.currentTarget.getBoundingClientRect();H(Math.max(0,Math.min(ptCount,Math.round(((e.clientX-b.left)/b.width*350-8)/254*ptCount))))}} onPointerLeave={()=>H(null)}>
  <defs><linearGradient id={id} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity=".17"/><stop offset="100%" stopColor={color} stopOpacity="0"/></linearGradient></defs>
  {[0,1,2,3].map(i=>{const v=hi-(hi-lo)*i/3,y=Y(v);return <g key={i}><line x1="8" x2="262" y1={y} y2={y} stroke="#e1e7ed" strokeDasharray="3 3"/><text x="270" y={y+4} fontSize="9" fill="#64748b">{money(v)}</text></g>})}
  <path d={`${line} L262,124 L8,124 Z`} fill={`url(#${id})`}/><path d={line} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round"/>
- <line x1={X(hover??count)} x2={X(hover??count)} y1="12" y2="124" stroke={color} strokeDasharray="3 3"/><circle cx={X(hover??count)} cy={Y(selected.v)} r="3" fill={color}/>
- {[0,.5,1].map((f,i)=><text key={i} x={8+254*f} y="145" textAnchor={i===0?'start':i===2?'end':'middle'} fontSize="9" fill="#64748b">{new Date(points[Math.round(count*f)].t).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</text>)}
+ <line x1={X(activeIdx)} x2={X(activeIdx)} y1="12" y2="124" stroke={color} strokeDasharray="3 3"/><circle cx={X(activeIdx)} cy={Y(selected.v)} r="3" fill={color}/>
+ {[0,.5,1].map((f,i)=><text key={i} x={8+254*f} y="145" textAnchor={i===0?'start':i===2?'end':'middle'} fontSize="9" fill="#64748b">{new Date((points[Math.round(ptCount*f)]||selected).t).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</text>)}
  </svg><p className="muted">Simulated market · hourly price changes {item.dividend?' · Dividend '+money(item.dividend)+'/hr per share':''}</p>
  {tier&&<div style={{margin:'8px 0 12px',padding:'10px 12px',background:'#f8fafc',borderRadius:10,border:'1px solid #e2e8f0'}}>
    <div className="line"><span className="eyebrow">OWNERSHIP &amp; ACQUISITION</span><span className="tag">{tier.tier}</span></div>

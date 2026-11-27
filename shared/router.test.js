@@ -17,6 +17,7 @@ test('parseRoute resolves all Phase 2 routes and unknown fallback', () => {
   assert.equal(parseRoute('/finance').name, 'finance');
   assert.equal(parseRoute('/empire').name, 'empire');
   assert.equal(parseRoute('/leaderboard').name, 'leaderboard');
+  assert.equal(parseRoute('/players/alice_99').params.username, 'alice_99');
   assert.equal(parseRoute('/profile').name, 'profile');
   assert.equal(parseRoute('/feedback').name, 'feedback');
   assert.equal(parseRoute('/admin/feedback').name, 'admin_feedback');
