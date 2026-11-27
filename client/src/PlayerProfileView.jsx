@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import GameArt from './GameArt.jsx';
 import ShowroomView from './ShowroomView.jsx';
+import BusinessHqScene from './BusinessHqScene.jsx';
 import { money } from '../../shared/format.js';
 import { api } from './storage.js';
 
@@ -179,10 +180,20 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
           {tab === 'businesses' && (
             bizData?.hidden ? <section><p className="muted">Businesses hidden by privacy settings.</p></section> :
             bizDetail ? (
-              <section>
-                <span className="eyebrow">{bizDetail.catalogueName} · READ-ONLY</span>
-                <h3>{bizDetail.name}</h3>
-                <div className="profile-kv"><span>Manager Status</span><strong>{bizDetail.managerStatus}</strong></div>
+              <>
+                <BusinessHqScene
+                  type={bizDetail.type}
+                  name={bizDetail.name}
+                  catalogueName={bizDetail.catalogueName}
+                  color={bizDetail.color || '#2563eb'}
+                  level={bizDetail.level}
+                  infra={bizDetail.upgrades?.find(u => u.key === 'infra')?.level || 1}
+                  efficiency={bizDetail.upgrades?.find(u => u.key === 'efficiency')?.level || 1}
+                  branches={(bizDetail.branches || []).length}
+                />
+                <section>
+                  <span className="eyebrow">{bizDetail.catalogueName} · READ-ONLY</span>
+                  <div className="profile-kv"><span>Manager Status</span><strong>{bizDetail.managerStatus}</strong></div>
                 {bizDetail.upgrades.map(u => (
                   <div key={u.key} className="profile-kv"><span>{u.name}</span><strong>Lv {u.level}</strong></div>
                 ))}
@@ -200,7 +211,8 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
                     <div className="profile-kv"><span>Net Hourly Profit</span><strong className={Number(bizDetail.financials.netProfit) >= 0 ? 'green' : 'negative'}>{money(bizDetail.financials.netProfit)}/hr</strong></div>
                   </>
                 )}
-              </section>
+                </section>
+              </>
             ) : (
               <div className="company-list">
                 {(bizData?.items || []).map(b => (

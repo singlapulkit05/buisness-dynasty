@@ -4,14 +4,21 @@ import { money } from '../../shared/format.js';
 import './showroom.css';
 
 const CATS = [
-  { id: 'cars', label: 'Garage (Cars)', storageKey: 'garage', storageCost: 15000, add: 2, unit: 'spaces', sceneClass: 'scene-cars' },
-  { id: 'aircraft', label: 'Hangar (Aircraft)', storageKey: 'hangar', storageCost: 250000, add: 1, unit: 'slots', sceneClass: 'scene-aircraft' },
-  { id: 'yachts', label: 'Marina (Yachts)', storageKey: 'marina', storageCost: 500000, add: 1, unit: 'berths', sceneClass: 'scene-yachts' }
+  { id: 'cars', label: 'Garage (Cars)', tab: 'Garage', storageKey: 'garage', storageCost: 15000, add: 2, unit: 'spaces', sceneClass: 'scene-cars', animCat: 'cars' },
+  { id: 'aircraft', label: 'Hangar (Aircraft)', tab: 'Hangar', storageKey: 'hangar', storageCost: 250000, add: 1, unit: 'slots', sceneClass: 'scene-aircraft', animCat: 'aircraft' },
+  { id: 'yachts', label: 'Marina (Yachts)', tab: 'Marina', storageKey: 'marina', storageCost: 500000, add: 1, unit: 'berths', sceneClass: 'scene-yachts', animCat: 'yachts' },
+  { id: 'paintings', label: 'Private Art Gallery', tab: 'Art Gallery', storageKey: null, sceneClass: 'scene-paintings', animCat: 'cars' },
+  { id: 'jewels', label: 'Dynasty Vault (Jewels)', tab: 'Vault', storageKey: null, sceneClass: 'scene-jewels', animCat: 'cars' },
+  { id: 'coins', label: 'Coin Museum', tab: 'Coins', storageKey: null, sceneClass: 'scene-coins', animCat: 'cars' },
+  { id: 'stamps', label: 'Stamp Album', tab: 'Stamps', storageKey: null, sceneClass: 'scene-stamps', animCat: 'cars' },
+  { id: 'nft', label: 'Digital Gallery (NFTs)', tab: 'NFTs', storageKey: null, sceneClass: 'scene-nft', animCat: 'cars' },
+  { id: 'properties', label: 'Property Exhibition', tab: 'Real Estate', storageKey: null, sceneClass: 'scene-properties', animCat: 'cars' }
 ];
 
 export default function ShowroomView({
   c,
   ownedMap = {},
+  ownedProperties = {},
   lockedAssets = [],
   storage = null,
   readOnly = false,
@@ -34,11 +41,13 @@ export default function ShowroomView({
   const touchStart = useRef(null);
   const meta = CATS.find(x => x.id === catId) || CATS[0];
 
-  // Owned items strictly derived from ownedMap; includes retro in garage
-  const ownedItems = c.assets.filter(x => {
-    const isCat = x.category === catId || (catId === 'cars' && (x.category === 'retro' || x.id === 'car' || x.id === 'retro'));
-    return isCat && (ownedMap[x.id] || 0) > 0;
-  });
+  // Owned items strictly derived from ownedMap or ownedProperties
+  const ownedItems = catId === 'properties'
+    ? c.properties.filter(x => (ownedProperties[x.id] || 0) > 0)
+    : c.assets.filter(x => {
+        const isCat = x.category === catId || (catId === 'cars' && (x.category === 'retro' || x.id === 'car' || x.id === 'retro'));
+        return isCat && (ownedMap[x.id] || 0) > 0;
+      });
 
   const filteredItems = [...ownedItems]
     .filter(x => !q.trim() || x.name.toLowerCase().includes(q.trim().toLowerCase()))
@@ -46,7 +55,9 @@ export default function ShowroomView({
 
   const curIndex = Math.max(0, ownedItems.findIndex(x => x.id === selectedId));
   const selected = ownedItems[curIndex] || ownedItems[0] || null;
-  const totalValue = ownedItems.reduce((sum, x) => sum + Number(x.price || 0), 0);
+  const totalValue = catId === 'properties'
+    ? ownedItems.reduce((sum, x) => sum + Number(x.price || 0) * (ownedProperties[x.id] || 1), 0)
+    : ownedItems.reduce((sum, x) => sum + Number(x.price || 0), 0);
 
   // Reconcile selection when owned list changes (sell, auction settlement, category switch)
   useEffect(() => {
@@ -76,8 +87,8 @@ export default function ShowroomView({
     return () => window.removeEventListener('keydown', onKey);
   }, [viewMode, curIndex, ownedItems.length, lightbox]);
 
-  const cap = storage?.[meta.storageKey] ?? null;
-  const isLocked = selected ? lockedAssets.includes(selected.id) : false;
+  const cap = meta.storageKey && storage ? (storage[meta.storageKey] ?? null) : null;
+  const isLocked = selected && catId !== 'properties' ? lockedAssets.includes(selected.id) : false;
 
   return (
     <div className="finance-dash">
@@ -85,7 +96,7 @@ export default function ShowroomView({
         <div className="line">
           <div>
             {onBack && <button className="secondary small" style={{ marginBottom: 6 }} onClick={onBack}>← Back</button>}
-            <span className="eyebrow">{readOnly ? `${ownerName}'S SHOWROOM` : 'PRIVATE SHOWROOM'}</span>
+            <span className="eyebrow">{readOnly ? `${ownerName}'S SHOWROOM` : 'PRIVATE SHOWCASE'}</span>
             <h2 style={{ margin: '2px 0' }}>{meta.label}</h2>
           </div>
           <div style={{ textAlign: 'right' }}>
@@ -97,7 +108,7 @@ export default function ShowroomView({
         <div className="showroom-tabs">
           {CATS.map(ct => (
             <button key={ct.id} className={catId === ct.id ? '' : 'secondary'} onClick={() => { setCatId(ct.id); setSlideDir('init'); setSelectedId(null); }}>
-              {ct.id === 'cars' ? 'Garage' : ct.id === 'aircraft' ? 'Hangar' : 'Marina'}
+              {ct.tab}
             </button>
           ))}
         </div>
@@ -107,7 +118,7 @@ export default function ShowroomView({
             <button className={viewMode === 'showroom' ? 'active' : ''} onClick={() => setViewMode('showroom')}>Showroom Stage</button>
             <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Collection Grid ({ownedItems.length})</button>
           </div>
-          {!readOnly && storage && act && (
+          {!readOnly && meta.storageKey && storage && act && (
             <button className="secondary small" onClick={() => act({ type: 'upgradeStorage', kind: meta.storageKey })}>
               Expand +{meta.add} {meta.unit} ({money(meta.storageCost * (cap || 1))})
             </button>
@@ -117,9 +128,9 @@ export default function ShowroomView({
 
       {ownedItems.length === 0 ? (
         <section>
-          <span className="eyebrow">EMPTY {meta.storageKey.toUpperCase()}</span>
-          <h3>No {catId} owned yet</h3>
-          <p className="muted">Purchase luxury {catId} in the Assets catalogue to showcase them here.</p>
+          <span className="eyebrow">EMPTY COLLECTION</span>
+          <h3>No {meta.tab.toLowerCase()} owned yet</h3>
+          <p className="muted">Purchase items in the catalogue to display them in this showcase.</p>
           {onBrowseCatalogue && !readOnly && (
             <button onClick={() => onBrowseCatalogue(catId)}>Browse {meta.label}</button>
           )}
@@ -150,18 +161,18 @@ export default function ShowroomView({
               </button>
               {ownedItems.length > 1 && (
                 <>
-                  <button type="button" className="showroom-nav-btn prev" onClick={() => step(-1)} aria-label="Previous vehicle">‹</button>
-                  <button type="button" className="showroom-nav-btn next" onClick={() => step(1)} aria-label="Next vehicle">›</button>
+                  <button type="button" className="showroom-nav-btn prev" onClick={() => step(-1)} aria-label="Previous item">‹</button>
+                  <button type="button" className="showroom-nav-btn next" onClick={() => step(1)} aria-label="Next item">›</button>
                 </>
               )}
-              <div key={`${selected.id}-${slideDir}`} className={`showroom-vehicle-wrap slide-${catId}-${slideDir}`}>
+              <div key={`${selected.id}-${slideDir}`} className={`showroom-vehicle-wrap slide-${meta.animCat}-${slideDir}`}>
                 <GameArt id={selected.id} item={selected} wide />
               </div>
               <div className="showroom-floor-shadow" />
             </div>
 
             {ownedItems.length > 1 && (
-              <div className="showroom-rail" role="listbox" aria-label="Owned vehicles">
+              <div className="showroom-rail" role="listbox" aria-label="Owned items">
                 {ownedItems.map((it, idx) => (
                   <button
                     key={it.id}
@@ -186,20 +197,30 @@ export default function ShowroomView({
               {isLocked && <span className="badge-pending">IN AUCTION</span>}
             </div>
             <h2 style={{ marginTop: 4 }}>{selected.name}</h2>
-            <div className="profile-kv"><span>New Asset Price</span><strong>{money(selected.price)}</strong></div>
-            <div className="profile-kv"><span>Instant Sell Payout (50%)</span><strong>{money(selected.price * 0.5)}</strong></div>
-            <div className="profile-kv"><span>Collection Slot</span><strong>{curIndex + 1} of {ownedItems.length}</strong></div>
+            <div className="profile-kv"><span>Catalogue Price</span><strong>{money(selected.price)}</strong></div>
+            {catId === 'properties' ? (
+              <>
+                <div className="profile-kv"><span>Owned Units</span><strong>{ownedProperties[selected.id] || 0}</strong></div>
+                <div className="profile-kv"><span>Base Rent</span><strong className="green">+{money(selected.income)}/hr</strong></div>
+                <p className="muted" style={{ fontSize: 11, marginTop: 6 }}>Representative architectural imagery shown.</p>
+              </>
+            ) : (
+              <>
+                <div className="profile-kv"><span>Instant Sell Payout (50%)</span><strong>{money(selected.price * 0.5)}</strong></div>
+                <div className="profile-kv"><span>Collection Slot</span><strong>{curIndex + 1} of {ownedItems.length}</strong></div>
+              </>
+            )}
 
             {!readOnly && act && (
               <div className="buttons" style={{ marginTop: 14 }}>
                 <button
                   className="secondary"
                   disabled={isLocked}
-                  onClick={() => act({ type: 'trade', category: 'assets', item: selected.id, sell: true })}
+                  onClick={() => act({ type: 'trade', category: catId === 'properties' ? 'properties' : 'assets', item: selected.id, sell: true })}
                 >
-                  {isLocked ? 'Locked in Auction' : `Sell (50%) · ${money(selected.price * 0.5)}`}
+                  {isLocked ? 'Locked in Auction' : `Sell · ${money(catId === 'properties' ? selected.price : selected.price * 0.5)}`}
                 </button>
-                {onStartAuction && !isLocked && online && (
+                {catId !== 'properties' && onStartAuction && !isLocked && online && (
                   <button onClick={() => onStartAuction(selected)}>Sell at Auction</button>
                 )}
               </div>

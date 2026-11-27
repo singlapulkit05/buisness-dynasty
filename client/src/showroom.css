@@ -277,3 +277,142 @@
   @keyframes waterShimmer { from { opacity: 0.35; transform: translateX(-2%); } to { opacity: 0.75; transform: translateX(2%); } }
   @keyframes fadeQuick { from { opacity: 0; } to { opacity: 1; } }
 }
+
+/* Additional Non-Vehicle Gallery, Vault, Museum & Property Exhibition Scenes */
+.scene-paintings {
+  background: linear-gradient(180deg, #faf8f5 0%, #f1ece4 68%, #e2d9cb 100%);
+}
+.scene-paintings .showroom-vehicle-wrap img {
+  border: 6px solid #d4af37;
+  background: #ffffff;
+  padding: 6px;
+}
+
+.scene-jewels {
+  background: radial-gradient(circle at 50% 35%, #f8fafc 0%, #e2e8f0 70%, #cbd5e1 100%);
+}
+.scene-jewels .showroom-vehicle-wrap img {
+  border: 2px solid #94a3b8;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.scene-coins {
+  background: linear-gradient(180deg, #f8fafc 0%, #e7eef6 60%, #dbe4f0 100%);
+}
+
+.scene-stamps {
+  background: linear-gradient(180deg, #fffdf7 0%, #f5efe2 100%);
+}
+
+.scene-nft {
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 50%, #f5f3ff 100%);
+}
+
+.scene-properties {
+  background: linear-gradient(180deg, #eff6ff 0%, #e0f2fe 48%, #e2e8f0 49%, #cbd5e1 100%);
+}
+
+/* Business Headquarters Architectural Scenes */
+.hq-scene {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 60%, #e2e8f0 100%);
+  border: 1px solid var(--border);
+  border-top: 4px solid var(--hq-color, #2563eb);
+  border-radius: 18px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+.hq-scene.hq-tier-2 {
+  background: linear-gradient(180deg, #ffffff 0%, #eff6ff 65%, #dbeafe 100%);
+}
+.hq-scene.hq-tier-3 {
+  background: linear-gradient(180deg, #ffffff 0%, #ecfdf5 60%, #d1fae5 100%);
+}
+
+.hq-skyline {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 14px 0;
+  border-bottom: 3px solid #cbd5e1;
+  min-height: 92px;
+}
+
+.hq-main-tower {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.hq-logo-badge {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 8px;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.14);
+}
+.hq-logo-badge img {
+  width: 34px;
+  height: 34px;
+  filter: brightness(0) invert(1);
+}
+
+.hq-floors {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 4px;
+  width: 52px;
+}
+.hq-floor-bar {
+  display: block;
+  height: 10px;
+  border-radius: 3px 3px 0 0;
+  background: var(--hq-color, #2563eb);
+  opacity: 0.78;
+}
+
+.hq-wings {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.hq-wing-block {
+  width: 24px;
+  height: 36px;
+  border-radius: 4px 4px 0 0;
+  background: #94a3b8;
+  opacity: 0.45;
+}
+.hq-tier-2 .hq-wing-block { height: 52px; opacity: 0.65; }
+.hq-tier-3 .hq-wing-block { height: 68px; opacity: 0.85; background: var(--hq-color, #059669); }
+
+/* Celebration Banner */
+.celebration-banner {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(94vw, 480px);
+  z-index: 40;
+  cursor: pointer;
+}
+.celebration-card {
+  background: #ffffff;
+  border: 2px solid #10b981;
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: 0 14px 32px rgba(6, 78, 59, 0.22);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .celebration-banner {
+    animation: celebrateDrop 450ms cubic-bezier(.16, 1, .3, 1) both;
+  }
+  @keyframes celebrateDrop {
+    from { opacity: 0; transform: translate(-50%, -18px) scale(0.96); }
+    to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  }
+}

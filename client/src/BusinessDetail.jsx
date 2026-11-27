@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import GameArt from './GameArt.jsx';
+import BusinessHqScene from './BusinessHqScene.jsx';
 import { money } from '../../shared/format.js';
 import { getBusinessModel } from '../../shared/business-models.js';
+import { getBusinessHqTier } from '../../shared/business-hq.js';
 import { simulateBusiness, predictBusiness, previewUpgrade, businessValuation } from '../../shared/business-sim.js';
 import { SUPPLY_CHAINS, activeContractsFor } from '../../shared/supply-chain.js';
 import { WORLD_REGIONS } from '../../shared/engagement.js';
@@ -55,14 +57,21 @@ export default function BusinessDetail({ s, b, x, c, bizColor, onBack, act, rewa
         <span className="lv-badge">Lv {b.level} · {x.kind.toUpperCase()}</span>
       </div>
 
-      <section className="company-hero">
-        <div className="biz-circle lg" style={{ background: b.color || bizColor }}><GameArt id={x.id} /></div>
-        <h2>{b.name || x.name}</h2>
-        <p className="muted" style={{ margin: '2px 0 8px' }}>{x.name} · {m.subtitle}</p>
-        <div className="company-income-box">
-          <strong className={netNum >= 0 ? 'green' : 'negative'}>{netNum >= 0 ? '+' : ''}{money(sim.netProfit)}/hr</strong>
-          <span>Net hourly profit ({sim.margin.toFixed(1)}% margin)</span>
-        </div>
+      <BusinessHqScene
+        type={b.type}
+        name={b.name}
+        catalogueName={x.name}
+        color={b.color || bizColor}
+        level={b.level}
+        infra={b.upgrades?.infra || 1}
+        efficiency={b.upgrades?.efficiency || 1}
+        branches={(b.branches || []).length}
+        busy={Boolean(b.job)}
+      />
+
+      <section className="company-income-box" style={{ textAlign: 'center', marginBottom: 14 }}>
+        <strong className={netNum >= 0 ? 'green' : 'negative'} style={{ fontSize: 22 }}>{netNum >= 0 ? '+' : ''}{money(sim.netProfit)}/hr</strong>
+        <div className="muted" style={{ fontSize: 12 }}>Net hourly profit ({sim.margin.toFixed(1)}% margin) · {m.subtitle}</div>
       </section>
 
       <div className="detail-tabs">
