@@ -14,6 +14,9 @@ test('parseRoute resolves all Phase 2 routes and unknown fallback', () => {
   assert.deepEqual(parseRoute('/markets/crypto/btc').params, { category: 'crypto', symbol: 'btc' });
   assert.equal(parseRoute('/properties').name, 'properties');
   assert.equal(parseRoute('/assets').name, 'assets');
+  assert.equal(parseRoute('/auctions').name, 'auctions');
+  assert.equal(parseRoute('/auctions/mine').name, 'auctions_mine');
+  assert.equal(parseRoute('/auctions/auc-123').params.auctionId, 'auc-123');
   assert.equal(parseRoute('/finance').name, 'finance');
   assert.equal(parseRoute('/empire').name, 'empire');
   assert.equal(parseRoute('/leaderboard').name, 'leaderboard');

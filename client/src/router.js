@@ -36,6 +36,16 @@ export function parseRoute(pathname = '/') {
   if (path === '/assets') {
     return { path, name: 'assets', tab: 'Assets', title: 'Luxury Assets', params: {} };
   }
+  if (path === '/auctions') {
+    return { path, name: 'auctions', tab: 'Auctions', title: 'Asset Auctions', params: {} };
+  }
+  if (path === '/auctions/mine') {
+    return { path, name: 'auctions_mine', tab: 'Auctions', title: 'My Auctions & Bids', params: {} };
+  }
+  if (path.startsWith('/auctions/')) {
+    const auctionId = decodeURIComponent(path.slice('/auctions/'.length));
+    return { path, name: 'auction_detail', tab: 'Auctions', title: 'Auction Detail', params: { auctionId } };
+  }
   if (path === '/finance') {
     return { path, name: 'finance', tab: 'Home', title: 'Financials & Banking', params: {} };
   }

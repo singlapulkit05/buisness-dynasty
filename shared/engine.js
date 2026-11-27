@@ -77,6 +77,7 @@ export function normalizeState(state) {
     s.watchlist ??= [];
     s.orders ??= [];
     s.contracts ??= [];
+    s.lockedAssets ??= [];
     s.research ??= { completed: [], active: null };
     s.research.completed ??= [];
     s.research.active ??= null;
@@ -765,6 +766,9 @@ export function apply(state, a, t, c = defaultCatalog) {
             if (a.sell) {
                 if (n < qty) {
                     throw Error('Not enough owned');
+                }
+                if (a.category === 'assets' && (s.lockedAssets || []).includes(x.id)) {
+                    throw Error('Asset is locked in an active auction');
                 }
 
                 map[x.id] = n - qty;

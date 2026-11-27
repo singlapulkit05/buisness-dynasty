@@ -28,6 +28,12 @@ import {
     validateFeedbackMessage,
     escapeRegex
 } from '../shared/feedback.js';
+import {
+    AUCTION_CONFIG,
+    storageKeyForAsset,
+    minNextBid,
+    validateListingInput
+} from '../shared/auctions.js';
 
 // Environment configuration
 
@@ -228,6 +234,65 @@ const marketQuoteSchema = new mongoose.Schema({
 });
 const MarketQuote = mongoose.model('MarketQuote', marketQuoteSchema);
 
+const auctionSchema = new mongoose.Schema(
+    {
+        sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+        sellerUsername: { type: String, required: true },
+        catalogueId: { type: String, required: true },
+        assetName: { type: String, required: true },
+        category: { type: String, required: true },
+        storageKey: { type: String, default: null },
+        startingBid: { type: String, required: true },
+        reservePrice: { type: String, default: null },
+        highestBidId: { type: mongoose.Schema.Types.ObjectId, default: null },
+        highestBidderId: { type: mongoose.Schema.Types.ObjectId, default: null },
+        highestBidderUsername: { type: String, default: null },
+        highestBidAmount: { type: String, default: null },
+        bidCount: { type: Number, default: 0 },
+        endsAt: { type: Date, required: true, index: true },
+        originalEndsAt: { type: Date, required: true },
+        status: { type: String, enum: ['active', 'settling', 'sold', 'unsold', 'cancelled'], default: 'active', index: true },
+        feeRateSnapshot: { type: Number, default: AUCTION_CONFIG.FEE_RATE },
+        version: { type: Number, default: 0 },
+        settlementId: { type: String, default: null },
+        settledAt: { type: Date, default: null },
+        cancelReason: { type: String, default: null }
+    },
+    { timestamps: true }
+);
+auctionSchema.index(
+    { sellerId: 1, catalogueId: 1 },
+    { unique: true, partialFilterExpression: { status: { $in: ['active', 'settling'] } } }
+);
+auctionSchema.index({ status: 1, endsAt: 1 });
+const Auction = mongoose.model('Auction', auctionSchema);
+
+const auctionBidSchema = new mongoose.Schema({
+    auctionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Auction', required: true, index: true },
+    bidderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    bidderUsername: { type: String, required: true },
+    amount: { type: String, required: true },
+    acceptedAt: { type: Date, default: Date.now },
+    sequence: { type: Number, required: true },
+    clientRequestId: { type: String, default: null },
+    status: { type: String, enum: ['leading', 'outbid', 'won', 'refunded'], default: 'leading' }
+});
+auctionBidSchema.index({ bidderId: 1, clientRequestId: 1 }, { unique: true, sparse: true });
+const AuctionBid = mongoose.model('AuctionBid', auctionBidSchema);
+
+const auctionSettlementSchema = new mongoose.Schema({
+    auctionId: { type: mongoose.Schema.Types.ObjectId, unique: true, required: true },
+    settlementId: { type: String, unique: true, required: true },
+    winnerId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sellerId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    grossAmount: { type: String, default: '0' },
+    feeAmount: { type: String, default: '0' },
+    sellerNet: { type: String, default: '0' },
+    outcome: { type: String, enum: ['sold', 'unsold', 'cancelled'], required: true },
+    settledAt: { type: Date, default: Date.now }
+});
+const AuctionSettlement = mongoose.model('AuctionSettlement', auctionSettlementSchema);
+
 let readyPromise;
 async function ensureReady() {
     if (!readyPromise) {
@@ -244,6 +309,9 @@ async function ensureReady() {
             await Feedback.init();
             await FeedbackMessage.init();
             await MarketQuote.init();
+            await Auction.init();
+            await AuctionBid.init();
+            await AuctionSettlement.init();
 
             if (
                 process.env.ADMIN_USERNAME &&
@@ -1956,6 +2024,563 @@ app.delete(
     })
 );
 
+// Player-to-Player Asset Auctions (Phase 5)
+
+const auctionLimit = rateLimit({
+    windowMs: 60000,
+    limit: 20,
+    keyGenerator: req => String(req.user?._id || req.ip)
+});
+
+function serializeAuction(a, viewerId) {
+    const isSeller = viewerId && String(a.sellerId) === String(viewerId);
+    const reserveMet = a.reservePrice
+        ? Boolean(a.highestBidAmount && new Decimal(a.highestBidAmount).gte(a.reservePrice))
+        : true;
+    return {
+        _id: a._id,
+        sellerUsername: a.sellerUsername,
+        isSeller,
+        catalogueId: a.catalogueId,
+        assetName: a.assetName,
+        category: a.category,
+        storageKey: a.storageKey,
+        startingBid: a.startingBid,
+        hasReserve: Boolean(a.reservePrice),
+        reservePrice: isSeller ? a.reservePrice : undefined,
+        reserveMet,
+        highestBidAmount: a.highestBidAmount,
+        highestBidderUsername: a.highestBidderUsername,
+        isLeading: viewerId && a.highestBidderId ? String(a.highestBidderId) === String(viewerId) : false,
+        bidCount: a.bidCount || 0,
+        minNextBid: minNextBid(a),
+        endsAt: a.endsAt,
+        originalEndsAt: a.originalEndsAt,
+        status: a.status,
+        feeRate: a.feeRateSnapshot,
+        createdAt: a.createdAt,
+        cancelReason: a.cancelReason
+    };
+}
+
+let auctionSettlePromise = null;
+async function settleExpiredAuctions(now = Date.now()) {
+    if (auctionSettlePromise) return auctionSettlePromise;
+    auctionSettlePromise = (async () => {
+        const due = await Auction.find({
+            status: 'active',
+            endsAt: { $lte: new Date(now) }
+        }).limit(25).lean();
+
+        for (const raw of due) {
+            const locked = await Auction.findOneAndUpdate(
+                { _id: raw._id, status: 'active' },
+                { $set: { status: 'settling' } },
+                { new: true }
+            );
+            if (!locked) continue;
+
+            const settlementId = randomUUID();
+            try {
+                const seller = await User.findById(locked.sellerId);
+                const reserveMet = locked.reservePrice
+                    ? Boolean(locked.highestBidAmount && new Decimal(locked.highestBidAmount).gte(locked.reservePrice))
+                    : true;
+                const won = Boolean(locked.highestBidId && locked.highestBidderId && reserveMet);
+
+                if (won) {
+                    const winner = await User.findById(locked.highestBidderId);
+                    if (!seller || !winner) throw Error('Participant missing');
+
+                    const sSt = normalizeState(seller.state);
+                    const wSt = normalizeState(winner.state);
+
+                    const gross = new Decimal(locked.highestBidAmount);
+                    const fee = gross.times(locked.feeRateSnapshot || AUCTION_CONFIG.FEE_RATE).toDecimalPlaces(2);
+                    const sellerNet = gross.minus(fee);
+
+                    sSt.assets[locked.catalogueId] = 0;
+                    sSt.lockedAssets = (sSt.lockedAssets || []).filter(id => id !== locked.catalogueId);
+                    const prevSCash = sSt.cash;
+                    sSt.cash = new Decimal(sSt.cash).plus(sellerNet).toString();
+                    sSt.ledger = [{
+                        id: `auc-sell-${settlementId}`,
+                        at: now,
+                        type: 'auction_sale',
+                        category: 'asset',
+                        source: locked.assetName,
+                        amount: sellerNet.toString(),
+                        prevCash: prevSCash,
+                        newCash: sSt.cash
+                    }, ...(sSt.ledger || [])].slice(0, 200);
+                    sSt.notifications = [{
+                        id: `auc-n-s-${settlementId}`,
+                        type: 'auction',
+                        title: 'Auction Sold',
+                        detail: `${locked.assetName} sold to ${winner.username} for $${gross.toFixed(2)} (net $${sellerNet.toFixed(2)})`,
+                        at: now,
+                        read: false
+                    }, ...(sSt.notifications || [])].slice(0, 50);
+
+                    wSt.assets[locked.catalogueId] = 1;
+                    wSt.notifications = [{
+                        id: `auc-n-w-${settlementId}`,
+                        type: 'auction',
+                        title: 'Auction Won',
+                        detail: `Won ${locked.assetName} from ${seller.username} for $${gross.toFixed(2)}`,
+                        at: now,
+                        read: false
+                    }, ...(wSt.notifications || [])].slice(0, 50);
+
+                    seller.state = sSt;
+                    seller.version = (seller.version || 0) + 1;
+                    seller.markModified('state');
+                    winner.state = wSt;
+                    winner.version = (winner.version || 0) + 1;
+                    winner.markModified('state');
+
+                    await Promise.all([
+                        seller.save(),
+                        winner.save(),
+                        AuctionBid.updateOne({ _id: locked.highestBidId }, { $set: { status: 'won' } }),
+                        AuctionSettlement.create({
+                            auctionId: locked._id,
+                            settlementId,
+                            winnerId: winner._id,
+                            sellerId: seller._id,
+                            grossAmount: gross.toString(),
+                            feeAmount: fee.toString(),
+                            sellerNet: sellerNet.toString(),
+                            outcome: 'sold',
+                            settledAt: new Date(now)
+                        })
+                    ]);
+                    locked.status = 'sold';
+                } else {
+                    if (seller) {
+                        const sSt = normalizeState(seller.state);
+                        sSt.lockedAssets = (sSt.lockedAssets || []).filter(id => id !== locked.catalogueId);
+                        sSt.notifications = [{
+                            id: `auc-n-u-${settlementId}`,
+                            type: 'auction',
+                            title: 'Auction Ended Unsold',
+                            detail: `${locked.assetName} did not meet sale conditions and was unlocked.`,
+                            at: now,
+                            read: false
+                        }, ...(sSt.notifications || [])].slice(0, 50);
+                        seller.state = sSt;
+                        seller.version = (seller.version || 0) + 1;
+                        seller.markModified('state');
+                        await seller.save();
+                    }
+                    if (locked.highestBidderId && locked.highestBidAmount) {
+                        const bidder = await User.findById(locked.highestBidderId);
+                        if (bidder) {
+                            const bSt = normalizeState(bidder.state);
+                            const prevCash = bSt.cash;
+                            bSt.cash = new Decimal(bSt.cash).plus(locked.highestBidAmount).toString();
+                            bSt.ledger = [{
+                                id: `auc-ref-${settlementId}`,
+                                at: now,
+                                type: 'auction_refund',
+                                category: 'asset',
+                                source: locked.assetName,
+                                amount: locked.highestBidAmount,
+                                prevCash,
+                                newCash: bSt.cash
+                            }, ...(bSt.ledger || [])].slice(0, 200);
+                            bidder.state = bSt;
+                            bidder.version = (bidder.version || 0) + 1;
+                            bidder.markModified('state');
+                            await bidder.save();
+                        }
+                        await AuctionBid.updateOne({ _id: locked.highestBidId }, { $set: { status: 'refunded' } });
+                    }
+                    await AuctionSettlement.create({
+                        auctionId: locked._id,
+                        settlementId,
+                        winnerId: null,
+                        sellerId: locked.sellerId,
+                        outcome: 'unsold',
+                        settledAt: new Date(now)
+                    });
+                    locked.status = 'unsold';
+                }
+
+                locked.settlementId = settlementId;
+                locked.settledAt = new Date(now);
+                await locked.save();
+            } catch (err) {
+                console.error('Auction settle error:', err.message);
+            }
+        }
+    })().finally(() => {
+        auctionSettlePromise = null;
+    });
+    return auctionSettlePromise;
+}
+
+app.get(
+    '/api/auctions',
+    auth,
+    wrap(async (req, res) => {
+        await settleExpiredAuctions(Date.now());
+        const { category = 'all', q = '', sort = 'ending_soon', status = 'active' } = req.query;
+        const filter = { status: status === 'ended' ? { $in: ['sold', 'unsold'] } : 'active' };
+        if (category !== 'all') filter.category = String(category);
+        if (String(q).trim()) {
+            filter.assetName = new RegExp(escapeRegex(String(q).trim()), 'i');
+        }
+        const sortMap = {
+            ending_soon: { endsAt: 1 },
+            newest: { createdAt: -1 },
+            price_asc: { startingBid: 1 },
+            price_desc: { startingBid: -1 }
+        };
+        const list = await Auction.find(filter)
+            .sort(sortMap[sort] || { endsAt: 1 })
+            .limit(40)
+            .lean();
+        res.json(list.map(a => serializeAuction(a, req.user._id)));
+    })
+);
+
+app.get(
+    '/api/auctions/me/listings',
+    auth,
+    wrap(async (req, res) => {
+        await settleExpiredAuctions(Date.now());
+        const list = await Auction.find({ sellerId: req.user._id }).sort({ createdAt: -1 }).limit(40).lean();
+        res.json(list.map(a => serializeAuction(a, req.user._id)));
+    })
+);
+
+app.get(
+    '/api/auctions/me/bids',
+    auth,
+    wrap(async (req, res) => {
+        await settleExpiredAuctions(Date.now());
+        const bids = await AuctionBid.find({ bidderId: req.user._id }).sort({ acceptedAt: -1 }).limit(40).lean();
+        const aucIds = [...new Set(bids.map(b => b.auctionId))];
+        const aucs = await Auction.find({ _id: { $in: aucIds } }).lean();
+        const aucMap = new Map(aucs.map(a => [String(a._id), serializeAuction(a, req.user._id)]));
+        res.json(bids.map(b => ({ ...b, auction: aucMap.get(String(b.auctionId)) || null })));
+    })
+);
+
+app.get(
+    '/api/auctions/:id',
+    auth,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Auction not found' });
+        }
+        await settleExpiredAuctions(Date.now());
+        const a = await Auction.findById(req.params.id).lean();
+        if (!a) return res.status(404).json({ error: 'Auction not found' });
+        const bids = await AuctionBid.find({ auctionId: a._id }).sort({ sequence: -1 }).limit(25).lean();
+        res.json({
+            auction: serializeAuction(a, req.user._id),
+            bids: bids.map(b => ({
+                _id: b._id,
+                bidderUsername: b.bidderUsername,
+                amount: b.amount,
+                acceptedAt: b.acceptedAt,
+                status: b.status
+            }))
+        });
+    })
+);
+
+app.post(
+    '/api/auctions',
+    auth,
+    auctionLimit,
+    wrap(async (req, res) => {
+        const now = Date.now();
+        const { item, catalogueId, startingBid, reservePrice, durationMs } = validateListingInput(req.body, catalog);
+        const s = settle(req.user.state, now, catalog);
+        if ((s.assets?.[catalogueId] || 0) < 1) {
+            throw Error('You must own this asset in your cloud save to list it');
+        }
+        if ((s.lockedAssets || []).includes(catalogueId)) {
+            throw Error('This asset is already listed in an active auction');
+        }
+        const activeCount = await Auction.countDocuments({ sellerId: req.user._id, status: { $in: ['active', 'settling'] } });
+        if (activeCount >= AUCTION_CONFIG.MAX_ACTIVE_PER_SELLER) {
+            throw Error(`Maximum ${AUCTION_CONFIG.MAX_ACTIVE_PER_SELLER} active auctions allowed`);
+        }
+
+        const endsAt = new Date(now + durationMs);
+        const created = await Auction.create({
+            sellerId: req.user._id,
+            sellerUsername: req.user.username,
+            catalogueId,
+            assetName: item.name,
+            category: item.category || 'legacy',
+            storageKey: storageKeyForAsset(item),
+            startingBid,
+            reservePrice,
+            endsAt,
+            originalEndsAt: endsAt,
+            status: 'active',
+            feeRateSnapshot: AUCTION_CONFIG.FEE_RATE
+        });
+
+        s.lockedAssets = [...(s.lockedAssets || []), catalogueId];
+        req.user.state = s;
+        req.user.version = (req.user.version || 0) + 1;
+        req.user.markModified('state');
+        await req.user.save();
+
+        res.status(201).json({ auction: serializeAuction(created, req.user._id), cloud: snapshot(req.user) });
+    })
+);
+
+app.post(
+    '/api/auctions/:id/bids',
+    auth,
+    auctionLimit,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Auction not found' });
+        }
+        const now = Date.now();
+        await settleExpiredAuctions(now);
+
+        const a = await Auction.findById(req.params.id);
+        if (!a || a.status !== 'active' || new Date(a.endsAt).getTime() <= now) {
+            throw Error('Auction is no longer active');
+        }
+        if (String(a.sellerId) === String(req.user._id)) {
+            throw Error('You cannot bid on your own auction');
+        }
+
+        const bidAmt = new Decimal(req.body?.amount || 0).toDecimalPlaces(2);
+        const reqMin = new Decimal(minNextBid(a));
+        if (!bidAmt.isFinite() || bidAmt.lt(reqMin)) {
+            throw Error(`Minimum bid is $${reqMin.toFixed(2)}`);
+        }
+
+        const bSt = settle(req.user.state, now, catalog);
+        if ((bSt.assets?.[a.catalogueId] || 0) > 0) {
+            throw Error('You already own this unique asset');
+        }
+        const leadingSameItem = await Auction.findOne({
+            _id: { $ne: a._id },
+            status: { $in: ['active', 'settling'] },
+            catalogueId: a.catalogueId,
+            highestBidderId: req.user._id
+        }).lean();
+        if (leadingSameItem) {
+            throw Error('You are already leading another auction for this asset');
+        }
+
+        const isSameLeader = a.highestBidderId && String(a.highestBidderId) === String(req.user._id);
+        if (!isSameLeader && a.storageKey) {
+            const used = catalog.assets
+                .filter(it => storageKeyForAsset(it) === a.storageKey)
+                .reduce((sum, it) => sum + (bSt.assets?.[it.id] || 0), 0);
+            const reservedSlots = await Auction.countDocuments({
+                _id: { $ne: a._id },
+                status: { $in: ['active', 'settling'] },
+                storageKey: a.storageKey,
+                highestBidderId: req.user._id
+            });
+            const cap = bSt.storage?.[a.storageKey] || 0;
+            if (used + reservedSlots + 1 > cap) {
+                throw Error(`Not enough ${a.storageKey} space; upgrade storage first`);
+            }
+        }
+
+        const chargeAmt = isSameLeader
+            ? bidAmt.minus(a.highestBidAmount || '0')
+            : bidAmt;
+        if (chargeAmt.lte(0) || new Decimal(bSt.cash).lt(chargeAmt)) {
+            throw Error('Insufficient cash for this bid');
+        }
+
+        // Anti-sniping extension (last 30s -> extend 30s, max 5m total)
+        let newEndsAt = new Date(a.endsAt);
+        const remMs = newEndsAt.getTime() - now;
+        if (remMs <= AUCTION_CONFIG.ANTI_SNIPE_WINDOW_MS) {
+            const maxEnd = new Date(a.originalEndsAt).getTime() + AUCTION_CONFIG.ANTI_SNIPE_MAX_EXTEND_MS;
+            newEndsAt = new Date(Math.min(maxEnd, now + AUCTION_CONFIG.ANTI_SNIPE_WINDOW_MS));
+        }
+
+        const nextSeq = (a.bidCount || 0) + 1;
+        const bidId = new mongoose.Types.ObjectId();
+        const prevLeaderId = a.highestBidderId;
+        const prevBidId = a.highestBidId;
+        const prevAmount = a.highestBidAmount;
+
+        const updatedAuc = await Auction.findOneAndUpdate(
+            { _id: a._id, version: a.version, status: 'active' },
+            {
+                $set: {
+                    highestBidId: bidId,
+                    highestBidderId: req.user._id,
+                    highestBidderUsername: req.user.username,
+                    highestBidAmount: bidAmt.toString(),
+                    endsAt: newEndsAt
+                },
+                $inc: { bidCount: 1, version: 1 }
+            },
+            { new: true }
+        );
+        if (!updatedAuc) {
+            throw Error('Another bid was accepted first — please retry');
+        }
+
+        const prevCash = bSt.cash;
+        bSt.cash = new Decimal(bSt.cash).minus(chargeAmt).toString();
+        bSt.ledger = [{
+            id: `bid-${bidId}`,
+            at: now,
+            type: 'auction_bid_escrow',
+            category: 'asset',
+            source: a.assetName,
+            amount: chargeAmt.neg().toString(),
+            prevCash,
+            newCash: bSt.cash
+        }, ...(bSt.ledger || [])].slice(0, 200);
+        req.user.state = bSt;
+        req.user.version = (req.user.version || 0) + 1;
+        req.user.markModified('state');
+
+        await Promise.all([
+            req.user.save(),
+            AuctionBid.create({
+                _id: bidId,
+                auctionId: a._id,
+                bidderId: req.user._id,
+                bidderUsername: req.user.username,
+                amount: bidAmt.toString(),
+                acceptedAt: new Date(now),
+                sequence: nextSeq,
+                status: 'leading'
+            })
+        ]);
+
+        if (prevBidId && prevLeaderId && prevAmount) {
+            await AuctionBid.updateOne({ _id: prevBidId }, { $set: { status: isSameLeader ? 'outbid' : 'refunded' } });
+            if (!isSameLeader) {
+                const prevUser = await User.findById(prevLeaderId);
+                if (prevUser) {
+                    const pSt = normalizeState(prevUser.state);
+                    const pPrev = pSt.cash;
+                    pSt.cash = new Decimal(pSt.cash).plus(prevAmount).toString();
+                    pSt.ledger = [{
+                        id: `outbid-${prevBidId}`,
+                        at: now,
+                        type: 'auction_outbid_refund',
+                        category: 'asset',
+                        source: a.assetName,
+                        amount: prevAmount,
+                        prevCash: pPrev,
+                        newCash: pSt.cash
+                    }, ...(pSt.ledger || [])].slice(0, 200);
+                    prevUser.state = pSt;
+                    prevUser.version = (prevUser.version || 0) + 1;
+                    prevUser.markModified('state');
+                    await prevUser.save();
+                }
+            }
+        }
+
+        res.json({ auction: serializeAuction(updatedAuc, req.user._id), cloud: snapshot(req.user) });
+    })
+);
+
+app.post(
+    '/api/auctions/:id/cancel',
+    auth,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Auction not found' });
+        }
+        const a = await Auction.findOne({ _id: req.params.id, sellerId: req.user._id });
+        if (!a || a.status !== 'active') throw Error('Auction cannot be cancelled');
+        if ((a.bidCount || 0) > 0) throw Error('Cannot cancel after a bid has been placed');
+
+        a.status = 'cancelled';
+        a.settledAt = new Date();
+        await a.save();
+
+        const s = normalizeState(req.user.state);
+        s.lockedAssets = (s.lockedAssets || []).filter(id => id !== a.catalogueId);
+        req.user.state = s;
+        req.user.version = (req.user.version || 0) + 1;
+        req.user.markModified('state');
+        await req.user.save();
+
+        res.json({ auction: serializeAuction(a, req.user._id), cloud: snapshot(req.user) });
+    })
+);
+
+app.get(
+    '/api/admin/auctions',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        await settleExpiredAuctions(Date.now());
+        const list = await Auction.find().sort({ createdAt: -1 }).limit(50).lean();
+        res.json(list);
+    })
+);
+
+app.post(
+    '/api/admin/auctions/:id/cancel',
+    auth,
+    admin,
+    wrap(async (req, res) => {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(404).json({ error: 'Auction not found' });
+        }
+        const now = Date.now();
+        const reason = String(req.body?.reason || 'Admin emergency cancellation').slice(0, 200);
+        const a = await Auction.findOneAndUpdate(
+            { _id: req.params.id, status: 'active' },
+            { $set: { status: 'cancelled', cancelReason: reason, settledAt: new Date(now) } },
+            { new: true }
+        );
+        if (!a) throw Error('Active auction not found');
+
+        const seller = await User.findById(a.sellerId);
+        if (seller) {
+            const sSt = normalizeState(seller.state);
+            sSt.lockedAssets = (sSt.lockedAssets || []).filter(id => id !== a.catalogueId);
+            seller.state = sSt;
+            seller.version = (seller.version || 0) + 1;
+            seller.markModified('state');
+            await seller.save();
+        }
+        if (a.highestBidderId && a.highestBidAmount) {
+            const bidder = await User.findById(a.highestBidderId);
+            if (bidder) {
+                const bSt = normalizeState(bidder.state);
+                bSt.cash = new Decimal(bSt.cash).plus(a.highestBidAmount).toString();
+                bidder.state = bSt;
+                bidder.version = (bidder.version || 0) + 1;
+                bidder.markModified('state');
+                await bidder.save();
+            }
+            if (a.highestBidId) {
+                await AuctionBid.updateOne({ _id: a.highestBidId }, { $set: { status: 'refunded' } });
+            }
+        }
+        await AuctionSettlement.create({
+            auctionId: a._id,
+            settlementId: randomUUID(),
+            winnerId: null,
+            sellerId: a.sellerId,
+            outcome: 'cancelled',
+            settledAt: new Date(now)
+        });
+        res.json(a);
+    })
+);
+
 // API fallback
 
 app.use('/api', (req, res) => {
@@ -2002,6 +2627,7 @@ app.use((err, req, res, next) => {
 
 if (!process.env.VERCEL) {
     await ensureReady();
+    setInterval(() => settleExpiredAuctions(Date.now()).catch(() => {}), 15000);
     app.listen(
         process.env.PORT || 4000,
 
