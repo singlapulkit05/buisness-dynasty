@@ -13,7 +13,7 @@ test('market impact report tracks sector modifiers and live quotes without inven
 
   const rep = buildMarketImpactReport(s, catalog, {
     quotes: { [firstStock.id]: { price: '250', prevPrice: '200' } },
-    at: 7200000 // Tech & AI Boom slot
+    at: 4 * 7200000 // Tech & AI Boom slot: (4*7+3)%6 === 1
   });
 
   assert.equal(rep.regime.id, 'tech_rally');

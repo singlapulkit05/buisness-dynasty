@@ -18,7 +18,8 @@ test('empire map clusters reconcile property valuations and rent with financialS
   let s = initial(100000);
   s.cash = '50000000';
   s = apply(s, { type: 'buyBusiness', item: 'shipping', name: 'Oceanic Freight', id: 'b1' }, 100000);
-  s = apply(s, { type: 'openBranch', id: 'b1', region: 'sgp' }, 100000);
+  const bizId = s.businesses[0].id;
+  s = apply(s, { type: 'openBranch', target: bizId, region: 'sgp', id: 'br1' }, 100000);
   const p0 = catalog.properties[0];
   const p1 = catalog.properties[10];
   s = apply(s, { type: 'trade', category: 'properties', item: p0.id, id: 'pr1' }, 100000);
