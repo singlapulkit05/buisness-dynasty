@@ -16,11 +16,14 @@ const TABS = [
   ['auctions', 'Auctions']
 ];
 
-export default function PlayerProfileView({ username, c, online, navigate, onBack }) {
-  const [tab, setTab] = useState('overview');
+export default function PlayerProfileView({ username, c, online, navigate, onBack, verifiedShowcase = false, showcaseCategory = 'cars', onAlert }) {
+  const [tab, setTab] = useState(verifiedShowcase ? 'assets' : 'overview');
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [socialBusy, setSocialBusy] = useState(false);
+  const [compareData, setCompareData] = useState(null);
+  const [showCompare, setShowCompare] = useState(false);
 
   const [bizData, setBizData] = useState(null);
   const [bizDetail, setBizDetail] = useState(null);
@@ -50,11 +53,18 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
     setLoading(true);
     setErr('');
     api(`/players/${encUser}/profile`)
-      .then(d => { if (alive) setProfile(d); })
+      .then(d => {
+        if (!alive) return;
+        setProfile(d);
+        if (verifiedShowcase) {
+          setTab('assets');
+          setShowroomMode(true);
+        }
+      })
       .catch(e => { if (alive) setErr(e.message); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [username, online]);
+  }, [username, online, verifiedShowcase]);
 
   useEffect(() => {
     if (!online || !profile) return;
@@ -66,6 +76,47 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
     else if (tab === 'achievements') api(`/players/${encUser}/achievements`).then(setAchData).catch(() => {});
     else if (tab === 'auctions') api(`/players/${encUser}/auctions`).then(setAucData).catch(() => {});
   }, [tab, profile?.username, propCountry, assetCat, assetSort, online]);
+
+  async function toggleFollow() {
+    if (!online || !profile || socialBusy) return;
+    setSocialBusy(true);
+    try {
+      const nextFollow = !profile.social?.isFollowing;
+      const res = await api(`/social/follow/${encUser}`, undefined, nextFollow ? 'POST' : 'DELETE');
+      setProfile(p => ({ ...p, social: { ...(p.social || {}), isFollowing: res.isFollowing, followerCount: res.followerCount } }));
+    } catch (e) {
+      if (onAlert) onAlert('Action Failed', e.message, 'error');
+    } finally {
+      setSocialBusy(false);
+    }
+  }
+
+  async function toggleRival() {
+    if (!online || !profile || socialBusy) return;
+    setSocialBusy(true);
+    try {
+      const nextRival = !profile.social?.isRival;
+      const res = await api(`/social/rival/${encUser}`, undefined, nextRival ? 'POST' : 'DELETE');
+      setProfile(p => ({ ...p, social: { ...(p.social || {}), isRival: res.isRival } }));
+    } catch (e) {
+      if (onAlert) onAlert('Action Failed', e.message, 'error');
+    } finally {
+      setSocialBusy(false);
+    }
+  }
+
+  async function toggleCompare() {
+    if (showCompare) { setShowCompare(false); return; }
+    setShowCompare(true);
+    if (!compareData && online) {
+      try {
+        const res = await api(`/social/compare/${encUser}`);
+        setCompareData(res);
+      } catch (e) {
+        if (onAlert) onAlert('Comparison Unavailable', e.message, 'error');
+      }
+    }
+  }
 
   async function openShowroom() {
     setShowroomMode(true);
@@ -100,29 +151,70 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
               <div className="art-heading">
                 <div className="admin-avatar">{profile.username[0].toUpperCase()}</div>
                 <div>
-                  <span className="eyebrow">{profile.rank?.current || 'Empire'}</span>
-                  <h2>{profile.username}</h2>
+                  <span className="eyebrow">{profile.rank?.current || 'Empire'}{profile.identity?.preferredIndustry ? ` · ${profile.identity.preferredIndustry}` : ''}</span>
+                  <h2>{profile.identity?.displayName || profile.username}</h2>
+                  {profile.identity?.displayName && <span className="muted" style={{ fontSize: 12 }}>@{profile.username}</span>}
                 </div>
               </div>
               <span className={profile.premium ? 'badge-premium' : 'badge-free'}>
                 {profile.premium ? '◆ VIP' : 'PLAYER'}
               </span>
             </div>
+            {profile.identity?.bio && <p style={{ margin: '8px 0 4px', fontSize: 13 }}>{profile.identity.bio}</p>}
             {profile.rank && (
               <div style={{ marginTop: 10 }}>
                 <div className="line muted" style={{ fontSize: 12 }}>
-                  <span>{profile.rank.next ? `Next: ${profile.rank.next}` : 'Highest Rank Reached'}</span>
+                  <span>{profile.rank.next ? `Next: ${profile.rank.next}` : 'Highest Rank Reached'} · {profile.social?.followerCount || 0} followers</span>
                   <span>{profile.rank.pct}%</span>
                 </div>
                 <progress max={100} value={profile.rank.pct} />
               </div>
             )}
+            <div className="buttons" style={{ marginTop: 10 }}>
+              <button type="button" className={profile.social?.isFollowing ? 'secondary small' : 'small'} disabled={!online || socialBusy} onClick={toggleFollow}>
+                {profile.social?.isFollowing ? '✓ Following' : '+ Follow Empire'}
+              </button>
+              <button type="button" className={profile.social?.isRival ? 'btn-danger small' : 'secondary small'} disabled={!online || socialBusy} onClick={toggleRival}>
+                {profile.social?.isRival ? '⚔️ Rival (Active)' : '⚔️ Declare Rival'}
+              </button>
+              <button type="button" className="secondary small" disabled={!online} onClick={toggleCompare}>
+                {showCompare ? 'Hide Compare' : 'Compare Side-by-Side'}
+              </button>
+              <button type="button" className="secondary small" onClick={() => {
+                const url = `${window.location.origin}/players/${encUser}/showcase/${encodeURIComponent(showcaseCategory || 'cars')}`;
+                navigator.clipboard?.writeText(url).catch(() => {});
+                if (onAlert) onAlert('Verified Showcase Link', `Copied link: ${url}`, 'success');
+              }}>Share Showcase</button>
+            </div>
             {profile.snapshotAt && (
               <p className="muted" style={{ fontSize: 11, marginTop: 8 }}>
                 Last validated snapshot: {new Date(profile.snapshotAt).toLocaleString()}
               </p>
             )}
           </section>
+
+          {showCompare && (
+            <section>
+              <span className="eyebrow">SIDE-BY-SIDE EMPIRE COMPARISON</span>
+              {!compareData ? <p className="muted">Loading comparison…</p> : (
+                <>
+                  <div className="profile-kv" style={{ borderBottom: '2px solid #cbd5e1', paddingBottom: 6 }}>
+                    <strong>Metric</strong>
+                    <span><b>You ({compareData.viewer.displayName})</b> vs <b>{compareData.target.displayName}</b></span>
+                  </div>
+                  {compareData.rows.map(r => {
+                    const fmt = val => val === null || val === undefined ? <span className="muted">Private</span> : (r.kind === 'money' ? money(val) : Number(val).toLocaleString());
+                    return (
+                      <div key={r.label} className="profile-kv">
+                        <span>{r.label}</span>
+                        <span><strong>{fmt(r.viewer)}</strong> · <strong>{fmt(r.target)}</strong></span>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </section>
+          )}
 
           <div className="detail-tabs">
             {TABS.map(([k, lbl]) => (
@@ -297,9 +389,12 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
                 c={c}
                 readOnly
                 ownerName={profile.username}
+                verifiedBanner={verifiedShowcase}
+                initialCategory={showcaseCategory || 'cars'}
                 storage={assetData?.storage}
                 ownedMap={Object.fromEntries((showroomVehicles.length ? showroomVehicles : (assetData?.items || [])).map(i => [i.id, 1]))}
                 lockedAssets={(showroomVehicles.length ? showroomVehicles : (assetData?.items || [])).filter(i => i.inAuction).map(i => i.id)}
+                onAlert={onAlert}
                 onBack={() => setShowroomMode(false)}
               />
             ) : (

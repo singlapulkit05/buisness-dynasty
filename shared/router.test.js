@@ -21,8 +21,10 @@ test('parseRoute resolves all Phase 2 routes and unknown fallback', () => {
   assert.equal(parseRoute('/auctions/auc-123').params.auctionId, 'auc-123');
   assert.equal(parseRoute('/finance').name, 'finance');
   assert.equal(parseRoute('/empire').name, 'empire');
+  assert.equal(parseRoute('/map').name, 'map');
   assert.equal(parseRoute('/leaderboard').name, 'leaderboard');
   assert.equal(parseRoute('/players/alice_99').params.username, 'alice_99');
+  assert.deepEqual(parseRoute('/players/alice_99/showcase/paintings').params, { username: 'alice_99', showcaseCategory: 'paintings', verifiedShowcase: true });
   assert.equal(parseRoute('/profile').name, 'profile');
   assert.equal(parseRoute('/feedback').name, 'feedback');
   assert.equal(parseRoute('/admin/feedback').name, 'admin_feedback');

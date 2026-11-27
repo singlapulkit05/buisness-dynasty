@@ -36,7 +36,9 @@ import {
 } from '../shared/auctions.js';
 import {
     normalizePrivacy,
+    normalizeIdentity,
     buildPublicProfileSummary,
+    compareProfiles,
     projectPublicBusinesses,
     projectPublicBusinessDetail,
     projectPublicInvestments,
@@ -126,6 +128,21 @@ const User = mongoose.model(
                     showCollections: true,
                     showOnLeaderboard: true
                 })
+            },
+
+            identity: {
+                type: mongoose.Schema.Types.Mixed,
+                default: () => ({ displayName: '', bio: '', preferredIndustry: '' })
+            },
+
+            following: {
+                type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+                default: []
+            },
+
+            rivals: {
+                type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+                default: []
             }
         },
         {
@@ -1266,7 +1283,7 @@ async function loadPublicPlayer(username) {
     const target = String(username || '').trim().toLowerCase();
     const u = await User.findOne(
         { username: target, role: { $ne: 'admin' } },
-        '_id username state premium premiumUntil privacy'
+        '_id username state premium premiumUntil privacy identity'
     ).lean();
     if (!u || u.privacy?.showOnLeaderboard === false) return null;
     return u;
@@ -1281,8 +1298,13 @@ app.get(
             return res.status(404).json({ error: 'Player profile not found or private' });
         }
         const liveQuotes = marketCache ? serializeQuotes(marketCache) : null;
-        const activeAucs = await Auction.find({ sellerId: u._id, status: 'active' }).limit(20).lean();
-        res.json(buildPublicProfileSummary(u, { liveQuotes, auctions: activeAucs }));
+        const [activeAucs, followerCount] = await Promise.all([
+            Auction.find({ sellerId: u._id, status: 'active' }).limit(20).lean(),
+            User.countDocuments({ following: u._id })
+        ]);
+        const isFollowing = (req.user.following || []).some(id => String(id) === String(u._id));
+        const isRival = (req.user.rivals || []).some(id => String(id) === String(u._id));
+        res.json(buildPublicProfileSummary(u, { liveQuotes, auctions: activeAucs, followerCount, isFollowing, isRival }));
     })
 );
 
@@ -1406,6 +1428,131 @@ app.patch(
         req.user.markModified('privacy');
         await req.user.save();
         res.json(next);
+    })
+);
+
+// Empire Identity, Social Watchlists, Rivalries & Comparisons (Add-on Priority 6)
+
+app.get(
+    '/api/profile/identity',
+    auth,
+    (req, res) => {
+        res.json(normalizeIdentity(req.user.identity));
+    }
+);
+
+app.patch(
+    '/api/profile/identity',
+    auth,
+    wrap(async (req, res) => {
+        const next = normalizeIdentity(req.body || {});
+        req.user.identity = next;
+        req.user.markModified('identity');
+        await req.user.save();
+        res.json(next);
+    })
+);
+
+app.get(
+    '/api/social/network',
+    auth,
+    wrap(async (req, res) => {
+        const followIds = (req.user.following || []).map(String);
+        const rivalIds = (req.user.rivals || []).map(String);
+        const allIds = [...new Set([...followIds, ...rivalIds])];
+        const docs = allIds.length
+            ? await User.find({ _id: { $in: allIds }, role: { $ne: 'admin' } }, '_id username state privacy identity following').lean()
+            : [];
+        const liveQuotes = marketCache ? serializeQuotes(marketCache) : null;
+        const projectBrief = u => {
+            if (u.privacy?.showOnLeaderboard === false) return null;
+            const summary = buildPublicProfileSummary(u, { liveQuotes });
+            const isMutual = (u.following || []).some(id => String(id) === String(req.user._id));
+            return {
+                username: summary.username,
+                displayName: summary.identity?.displayName || '',
+                level: summary.level,
+                rank: summary.rank?.current,
+                netWorth: summary.overview.netWorth,
+                hourlyProfit: summary.overview.hourlyProfit,
+                isMutual
+            };
+        };
+        const map = new Map(docs.map(d => [String(d._id), projectBrief(d)]));
+        const followerCount = await User.countDocuments({ following: req.user._id });
+        res.json({
+            identity: normalizeIdentity(req.user.identity),
+            followerCount,
+            following: followIds.map(id => map.get(id)).filter(Boolean),
+            rivals: rivalIds.map(id => map.get(id)).filter(Boolean)
+        });
+    })
+);
+
+app.post(
+    '/api/social/follow/:username',
+    auth,
+    wrap(async (req, res) => {
+        const target = await loadPublicPlayer(req.params.username);
+        if (!target) return res.status(404).json({ error: 'Player profile not found or private' });
+        if (String(target._id) === String(req.user._id)) throw Error('Cannot follow yourself');
+        await User.updateOne({ _id: req.user._id }, { $addToSet: { following: target._id } });
+        const followerCount = await User.countDocuments({ following: target._id });
+        res.json({ ok: true, isFollowing: true, followerCount });
+    })
+);
+
+app.delete(
+    '/api/social/follow/:username',
+    auth,
+    wrap(async (req, res) => {
+        const target = await User.findOne({ username: String(req.params.username || '').trim().toLowerCase() }, '_id').lean();
+        if (target) {
+            await User.updateOne({ _id: req.user._id }, { $pull: { following: target._id } });
+        }
+        const followerCount = target ? await User.countDocuments({ following: target._id }) : 0;
+        res.json({ ok: true, isFollowing: false, followerCount });
+    })
+);
+
+app.post(
+    '/api/social/rival/:username',
+    auth,
+    wrap(async (req, res) => {
+        const target = await loadPublicPlayer(req.params.username);
+        if (!target) return res.status(404).json({ error: 'Player profile not found or private' });
+        if (String(target._id) === String(req.user._id)) throw Error('Cannot declare yourself as a rival');
+        const cur = (req.user.rivals || []).map(String);
+        if (!cur.includes(String(target._id)) && cur.length >= 10) {
+            throw Error('Maximum 10 tracked rivals allowed');
+        }
+        await User.updateOne({ _id: req.user._id }, { $addToSet: { rivals: target._id } });
+        res.json({ ok: true, isRival: true });
+    })
+);
+
+app.delete(
+    '/api/social/rival/:username',
+    auth,
+    wrap(async (req, res) => {
+        const target = await User.findOne({ username: String(req.params.username || '').trim().toLowerCase() }, '_id').lean();
+        if (target) {
+            await User.updateOne({ _id: req.user._id }, { $pull: { rivals: target._id } });
+        }
+        res.json({ ok: true, isRival: false });
+    })
+);
+
+app.get(
+    '/api/social/compare/:username',
+    auth,
+    wrap(async (req, res) => {
+        const target = await loadPublicPlayer(req.params.username);
+        if (!target) return res.status(404).json({ error: 'Player profile not found or private' });
+        const liveQuotes = marketCache ? serializeQuotes(marketCache) : null;
+        const viewerSummary = buildPublicProfileSummary({ ...req.user.toObject(), privacy: normalizePrivacy() }, { liveQuotes });
+        const targetSummary = buildPublicProfileSummary(target, { liveQuotes });
+        res.json(compareProfiles(viewerSummary, targetSummary));
     })
 );
 

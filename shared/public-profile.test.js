@@ -4,7 +4,9 @@ import { initial, apply } from './engine.js';
 import { catalog } from './catalog.js';
 import {
   normalizePrivacy,
+  normalizeIdentity,
   buildPublicProfileSummary,
+  compareProfiles,
   projectPublicBusinesses,
   projectPublicBusinessDetail,
   projectPublicAssets,
@@ -22,15 +24,24 @@ test('public profile projections enforce privacy and exclude private fields', ()
   const u = {
     username: 'empire_user',
     passwordHash: 'secret-hash',
+    identity: { displayName: 'Imperial Vaults', bio: 'Long-term builder', preferredIndustry: 'Finance' },
     state: s,
     privacy: normalizePrivacy({ showFinancials: false, hiddenCategories: ['paintings'] })
   };
 
-  const summary = buildPublicProfileSummary(u, { rankPos: 2 });
+  const summary = buildPublicProfileSummary(u, { rankPos: 2, followerCount: 4, isFollowing: true, isRival: true });
   assert.equal(summary.username, 'empire_user');
+  assert.equal(summary.identity.displayName, 'Imperial Vaults');
+  assert.equal(summary.social.followerCount, 4);
+  assert.equal(summary.social.isFollowing, true);
   assert.equal(summary.overview.netWorth, null);
   assert.equal(summary.overview.businessesCount, 1);
   assert.equal(summary.passwordHash, undefined);
+
+  const viewer = buildPublicProfileSummary({ username: 'viewer_one', state: initial(0), privacy: normalizePrivacy() });
+  const cmp = compareProfiles(viewer, summary);
+  const nwRow = cmp.rows.find(r => r.label === 'Net Worth');
+  assert.equal(nwRow.target, null); // Private stays null, never 0!
 
   const bizDetail = projectPublicBusinessDetail(u, 'b1');
   assert.equal(bizDetail.upgrades.length, 3);

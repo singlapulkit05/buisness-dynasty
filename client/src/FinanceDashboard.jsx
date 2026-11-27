@@ -3,12 +3,14 @@ import Decimal from 'decimal.js';
 import { money } from '../../shared/format.js';
 import { financialStatement, FINANCIAL_TIME } from '../../shared/engine.js';
 import { currentEconomyEvent, recentEconomyEvents } from '../../shared/economy-events.js';
+import { buildNetWorthSeries } from '../../shared/market-impact.js';
 
 export default function FinanceDashboard({ s, c, onBack, act }) {
   const [cat, setCat] = useState('all');
   const [savAmt, setSavAmt] = useState('10000');
   const [loanAmt, setLoanAmt] = useState('25000');
   const fs = financialStatement(s, c);
+  const nwSeries = buildNetWorthSeries(s, fs.netWorth);
   const ev = currentEconomyEvent(s.at);
   const news = recentEconomyEvents(s.at, 4);
   const score = s.banking?.creditScore || 680;
@@ -82,6 +84,26 @@ export default function FinanceDashboard({ s, c, onBack, act }) {
         <div className="profile-kv"><span>Total Assets</span><strong>{money(fs.totalAssets)}</strong></div>
         <div className="profile-kv"><span>Savings ({fs.apy}% APY)</span><strong className="green">{money(fs.savings)}</strong></div>
         <div className="profile-kv"><span>Liabilities (Principal + Interest)</span><strong className="negative">{money(fs.liabilities)}</strong></div>
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #e2e8f0' }}>
+          <span className="eyebrow">NET WORTH TRAJECTORY</span>
+          {!nwSeries.ready ? (
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>Complete transactions to record and plot your net worth trajectory.</p>
+          ) : (() => {
+            const vals = nwSeries.points.map(p => p.estNetWorth);
+            const lo = Math.min(...vals), hi = Math.max(...vals);
+            const span = Math.max(1, hi - lo);
+            const pts = nwSeries.points.map((p, idx) => {
+              const x = (idx / Math.max(1, nwSeries.points.length - 1)) * 300;
+              const y = 64 - ((p.estNetWorth - lo) / span) * 52;
+              return `${x.toFixed(1)},${y.toFixed(1)}`;
+            }).join(' ');
+            return (
+              <svg className="nw-spark" viewBox="0 0 300 72" role="img" aria-label="Recorded net worth trend">
+                <polyline fill="none" stroke="#087f5b" strokeWidth="2.2" points={pts} />
+              </svg>
+            );
+          })()}
+        </div>
       </section>
 
       <section className="news-ticker">

@@ -59,11 +59,22 @@ export function parseRoute(pathname = '/') {
   if (path === '/empire') {
     return { path, name: 'empire', tab: 'Home', title: 'R&D & Missions', params: {} };
   }
+  if (path === '/map') {
+    return { path, name: 'map', tab: 'Home', title: 'Global Empire Map', params: {} };
+  }
   if (path === '/leaderboard') {
     return { path, name: 'leaderboard', tab: 'Home', title: 'Global Leaderboard', params: {} };
   }
   if (path.startsWith('/players/')) {
-    const username = decodeURIComponent(path.slice('/players/'.length));
+    const rest = path.slice('/players/'.length);
+    const scIdx = rest.indexOf('/showcase');
+    if (scIdx > 0) {
+      const username = decodeURIComponent(rest.slice(0, scIdx));
+      const catPart = rest.slice(scIdx + '/showcase'.length).replace(/^\/+/, '');
+      const category = catPart ? decodeURIComponent(catPart) : 'cars';
+      return { path, name: 'player_profile', tab: 'Home', title: `${username} — Verified Showcase`, params: { username, showcaseCategory: category, verifiedShowcase: true } };
+    }
+    const username = decodeURIComponent(rest);
     return { path, name: 'player_profile', tab: 'Home', title: `${username} — Profile`, params: { username } };
   }
   if (path === '/profile') {

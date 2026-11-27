@@ -24,6 +24,15 @@ export function getEmpireRank(nwNum) {
   return { cur, nxt, pct, remaining: nxt ? Math.max(0, nxt.min - nwNum) : 0 };
 }
 
+export function normalizeIdentity(raw = {}) {
+  const cleanStr = (v, max) => String(v || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
+  return {
+    displayName: cleanStr(raw?.displayName, 32),
+    bio: cleanStr(raw?.bio, 160),
+    preferredIndustry: cleanStr(raw?.preferredIndustry, 32)
+  };
+}
+
 export function normalizePrivacy(raw = {}) {
   return {
     showOnLeaderboard: raw.showOnLeaderboard !== false,
@@ -49,9 +58,10 @@ export function propGroup(x) {
   return cleaned || 'Other';
 }
 
-export function buildPublicProfileSummary(u, { rankPos = null, liveQuotes = null, auctions = [] } = {}) {
+export function buildPublicProfileSummary(u, { rankPos = null, liveQuotes = null, auctions = [], followerCount = 0, isFollowing = false, isRival = false } = {}) {
   const st = normalizeState(u.state || {});
   const priv = normalizePrivacy(u.privacy);
+  const identity = normalizeIdentity(u.identity);
   const now = Date.now();
   const isPrem = Boolean(u.premium) && (!u.premiumUntil || new Date(u.premiumUntil).getTime() > now);
   const nw = Number(netWorth(st, catalog));
@@ -135,6 +145,12 @@ export function buildPublicProfileSummary(u, { rankPos = null, liveQuotes = null
 
   return {
     username: u.username,
+    identity,
+    social: {
+      followerCount: Number(followerCount || 0),
+      isFollowing: Boolean(isFollowing),
+      isRival: Boolean(isRival)
+    },
     level: st.level || 1,
     premium: priv.showVip ? isPrem : false,
     privacy: {
@@ -455,5 +471,34 @@ export function projectPublicAchievements(u) {
       unlocked: a.claimed || a.done,
       progressPct: priv.showFinancials ? Math.min(100, Math.round((a.cur / a.target) * 100)) : null
     }))
+  };
+}
+
+export function compareProfiles(viewerSummary, targetSummary) {
+  const v = viewerSummary?.overview || {};
+  const t = targetSummary?.overview || {};
+  return {
+    viewer: {
+      username: viewerSummary.username,
+      displayName: viewerSummary.identity?.displayName || viewerSummary.username,
+      level: viewerSummary.level,
+      rank: viewerSummary.rank?.current
+    },
+    target: {
+      username: targetSummary.username,
+      displayName: targetSummary.identity?.displayName || targetSummary.username,
+      level: targetSummary.level,
+      rank: targetSummary.rank?.current
+    },
+    rows: [
+      { label: 'Net Worth', viewer: v.netWorth, target: t.netWorth, kind: 'money' },
+      { label: 'Hourly Profit', viewer: v.hourlyProfit, target: t.hourlyProfit, kind: 'money' },
+      { label: 'Businesses', viewer: v.businessesCount, target: t.businessesCount, kind: 'count' },
+      { label: 'Global Branches', viewer: v.branchesCount, target: t.branchesCount, kind: 'count' },
+      { label: 'Properties', viewer: v.propertiesCount, target: t.propertiesCount, kind: 'count' },
+      { label: 'Luxury Items', viewer: v.luxuryCount, target: t.luxuryCount, kind: 'count' },
+      { label: 'Research Unlocked', viewer: v.researchDone, target: t.researchDone, kind: 'count' },
+      { label: 'Achievements', viewer: v.achievementsDone, target: t.achievementsDone, kind: 'count' }
+    ]
   };
 }

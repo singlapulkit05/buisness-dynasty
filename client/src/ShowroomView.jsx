@@ -23,13 +23,17 @@ export default function ShowroomView({
   storage = null,
   readOnly = false,
   ownerName = null,
+  verifiedBanner = false,
+  username = null,
   initialCategory = 'cars',
   act,
   online = true,
   onStartAuction,
   onBrowseCatalogue,
+  onAlert,
   onBack
 }) {
+  const [copiedLink, setCopiedLink] = useState(false);
   const [catId, setCatId] = useState(CATS.some(x => x.id === initialCategory) ? initialCategory : 'cars');
   const [viewMode, setViewMode] = useState('showroom');
   const [selectedId, setSelectedId] = useState(null);
@@ -102,8 +106,30 @@ export default function ShowroomView({
           <div style={{ textAlign: 'right' }}>
             <strong className="green" style={{ fontSize: 18 }}>{money(totalValue)}</strong>
             <div className="muted">{ownedItems.length} owned{cap !== null ? ` · ${ownedItems.length}/${cap} ${meta.unit}` : ''}</div>
+            {(readOnly ? ownerName : username) && (
+              <button
+                type="button"
+                className="secondary small"
+                style={{ marginTop: 4 }}
+                onClick={() => {
+                  const targetUser = readOnly ? ownerName : username;
+                  const url = `${window.location.origin}/players/${encodeURIComponent(targetUser)}/showcase/${encodeURIComponent(catId)}`;
+                  navigator.clipboard?.writeText(url).catch(() => {});
+                  setCopiedLink(true);
+                  setTimeout(() => setCopiedLink(false), 2000);
+                  if (onAlert) onAlert('Verified Showcase Link', `Copied link: ${url}`, 'success');
+                }}
+              >
+                {copiedLink ? '✓ Link Copied' : 'Share Verified Showcase'}
+              </button>
+            )}
           </div>
         </div>
+        {verifiedBanner && (
+          <p className="notice" style={{ marginTop: 8, marginBottom: 4 }}>
+            ✓ Verified Server Showcase for <b>@{ownerName}</b> — read-only live ownership view.
+          </p>
+        )}
 
         <div className="showroom-tabs">
           {CATS.map(ct => (

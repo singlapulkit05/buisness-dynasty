@@ -17,6 +17,8 @@ export default function EngagementView({ s, c, online, act, onBack, onOpenProfil
   const [searchQ, setSearchQ] = useState('');
   const [searchResults, setSearchResults] = useState(null);
   const [searchBusy, setSearchBusy] = useState(false);
+  const [network, setNetwork] = useState(null);
+  const [netLoading, setNetLoading] = useState(false);
 
   const nwNum = Number(netWorth(s, c));
   const achs = evaluateAchievements(s, c, nwNum);
@@ -33,6 +35,12 @@ export default function EngagementView({ s, c, online, act, onBack, onOpenProfil
         .then(setLeaders)
         .catch(e => setLbErr(e.message))
         .finally(() => setLbLoading(false));
+    } else if (sub === 'network' && online) {
+      setNetLoading(true);
+      api('/social/network')
+        .then(setNetwork)
+        .catch(e => setLbErr(e.message))
+        .finally(() => setNetLoading(false));
     }
   }, [sub, online]);
 
@@ -47,6 +55,7 @@ export default function EngagementView({ s, c, online, act, onBack, onOpenProfil
         <button className={sub === 'research' ? 'active' : ''} onClick={() => setSub('research')}>Research</button>
         <button className={sub === 'achievements' ? 'active' : ''} onClick={() => setSub('achievements')}>Missions</button>
         <button className={sub === 'leaderboard' ? 'active' : ''} onClick={() => setSub('leaderboard')}>Leaderboard</button>
+        <button className={sub === 'network' ? 'active' : ''} onClick={() => setSub('network')}>Watchlist &amp; Rivals</button>
         <button className={sub === 'alerts' ? 'active' : ''} onClick={() => setSub('alerts')}>Alerts{unreadCount > 0 ? ` (${unreadCount})` : ''}</button>
       </div>
 
@@ -175,6 +184,45 @@ export default function EngagementView({ s, c, online, act, onBack, onOpenProfil
               </div>
             ))}
           </section>
+        </>
+      )}
+
+      {sub === 'network' && (
+        <>
+          <section className="card-networth">
+            <span className="eyebrow">SOCIAL WATCHLIST &amp; RIVALRIES</span>
+            <h2>{network ? `${network.followerCount} Followers` : 'My Network'}</h2>
+            {!online && <p className="muted">Connect online to view followed empires and active rivalries.</p>}
+            {online && netLoading && <p className="muted">Loading network…</p>}
+          </section>
+          {online && network && (
+            <div className="desktop-grid-2">
+              <section>
+                <span className="eyebrow">FOLLOWED EMPIRES ({network.following.length})</span>
+                {network.following.length === 0 ? <p className="muted">Not following anyone yet. Open any player from the Leaderboard to follow them.</p> : network.following.map(p => (
+                  <div key={p.username} className="profile-kv" style={{ cursor: onOpenProfile ? 'pointer' : 'default' }} onClick={() => onOpenProfile && onOpenProfile(p.username)}>
+                    <div>
+                      <strong>{p.displayName || p.username}</strong> {p.isMutual && <span className="badge-premium">MUTUAL</span>}
+                      <div className="muted" style={{ fontSize: 12 }}>@{p.username} · Lv {p.level} · {p.rank}</div>
+                    </div>
+                    <strong className="green">{p.netWorth !== null ? money(p.netWorth) : 'Private'} ›</strong>
+                  </div>
+                ))}
+              </section>
+              <section>
+                <span className="eyebrow">TRACKED RIVALS ({network.rivals.length}/10)</span>
+                {network.rivals.length === 0 ? <p className="muted">No rivals declared yet. Visit a player profile to declare a friendly rivalry and compare stats.</p> : network.rivals.map(p => (
+                  <div key={p.username} className="profile-kv" style={{ cursor: onOpenProfile ? 'pointer' : 'default' }} onClick={() => onOpenProfile && onOpenProfile(p.username)}>
+                    <div>
+                      <strong>⚔️ {p.displayName || p.username}</strong>
+                      <div className="muted" style={{ fontSize: 12 }}>@{p.username} · Lv {p.level} · {p.rank}</div>
+                    </div>
+                    <strong className="green">{p.netWorth !== null ? money(p.netWorth) : 'Private'} ›</strong>
+                  </div>
+                ))}
+              </section>
+            </div>
+          )}
         </>
       )}
 
