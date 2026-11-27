@@ -250,6 +250,7 @@ const auctionSchema = new mongoose.Schema(
         sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
         sellerUsername: { type: String, required: true },
         catalogueId: { type: String, required: true },
+        cataloguePrice: { type: String, default: null },
         assetName: { type: String, required: true },
         category: { type: String, required: true },
         storageKey: { type: String, default: null },
@@ -2159,6 +2160,7 @@ const auctionLimit = rateLimit({
 
 function serializeAuction(a, viewerId) {
     const isSeller = viewerId && String(a.sellerId) === String(viewerId);
+    const catPrice = a.cataloguePrice || String(catalog.assets.find(x => x.id === a.catalogueId)?.price || a.startingBid);
     const reserveMet = a.reservePrice
         ? Boolean(a.highestBidAmount && new Decimal(a.highestBidAmount).gte(a.reservePrice))
         : true;
@@ -2167,6 +2169,7 @@ function serializeAuction(a, viewerId) {
         sellerUsername: a.sellerUsername,
         isSeller,
         catalogueId: a.catalogueId,
+        cataloguePrice: catPrice,
         assetName: a.assetName,
         category: a.category,
         storageKey: a.storageKey,
@@ -2178,7 +2181,7 @@ function serializeAuction(a, viewerId) {
         highestBidderUsername: a.highestBidderUsername,
         isLeading: viewerId && a.highestBidderId ? String(a.highestBidderId) === String(viewerId) : false,
         bidCount: a.bidCount || 0,
-        minNextBid: minNextBid(a),
+        minNextBid: minNextBid({ ...a, cataloguePrice: catPrice }),
         endsAt: a.endsAt,
         originalEndsAt: a.originalEndsAt,
         status: a.status,
@@ -2423,7 +2426,7 @@ app.post(
     auctionLimit,
     wrap(async (req, res) => {
         const now = Date.now();
-        const { item, catalogueId, startingBid, reservePrice, durationMs } = validateListingInput(req.body, catalog);
+        const { item, catalogueId, cataloguePrice, startingBid, reservePrice, durationMs } = validateListingInput(req.body, catalog);
         const s = settle(req.user.state, now, catalog);
         if ((s.assets?.[catalogueId] || 0) < 1) {
             throw Error('You must own this asset in your cloud save to list it');
@@ -2441,6 +2444,7 @@ app.post(
             sellerId: req.user._id,
             sellerUsername: req.user.username,
             catalogueId,
+            cataloguePrice,
             assetName: item.name,
             category: item.category || 'legacy',
             storageKey: storageKeyForAsset(item),
@@ -2481,10 +2485,17 @@ app.post(
             throw Error('You cannot bid on your own auction');
         }
 
+        const maxPrice = new Decimal(a.cataloguePrice || catalog.assets.find(x => x.id === a.catalogueId)?.price || '1000000000000');
+        if (a.highestBidAmount && new Decimal(a.highestBidAmount).gte(maxPrice)) {
+            throw Error(`Maximum auction price ($${maxPrice.toFixed(2)}) has already been reached`);
+        }
         const bidAmt = new Decimal(req.body?.amount || 0).toDecimalPlaces(2);
-        const reqMin = new Decimal(minNextBid(a));
+        const reqMin = new Decimal(minNextBid({ ...a.toObject(), cataloguePrice: maxPrice.toString() }));
         if (!bidAmt.isFinite() || bidAmt.lt(reqMin)) {
             throw Error(`Minimum bid is $${reqMin.toFixed(2)}`);
+        }
+        if (bidAmt.gt(maxPrice)) {
+            throw Error(`Bid cannot exceed new asset price ($${maxPrice.toFixed(2)})`);
         }
 
         const bSt = settle(req.user.state, now, catalog);

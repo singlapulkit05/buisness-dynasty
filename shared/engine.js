@@ -780,7 +780,8 @@ export function apply(state, a, t, c = defaultCatalog) {
                         : prevCost.times(n - qty).div(n).toString();
                 }
 
-                s.cash = add(s.cash, D(p).times(qty));
+                const payoutUnit = a.category === 'assets' ? D(p).times('0.5') : D(p);
+                s.cash = add(s.cash, payoutUnit.times(qty));
             } else {
                 if (a.category === 'stocks') {
                     const total = stockTotalShares(x);

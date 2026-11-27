@@ -178,14 +178,20 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
               {a.status === 'active' && !a.isSeller && (
                 <form onSubmit={placeBid}>
                   <p className="muted" style={{ fontSize: 12 }}>
-                    Minimum next bid: <b>{money(a.minNextBid)}</b>. Winning bids incur a {(a.feeRate * 100).toFixed(0)}% seller fee. Anti-sniping extends bids in final 30s.
+                    Min bid: <b>{money(a.minNextBid)}</b> · Max cap (new price): <b>{money(a.cataloguePrice || assetItem?.price || 0)}</b>. Winning bids incur a {(a.feeRate * 100).toFixed(0)}% seller fee.
                   </p>
-                  <label>Your Bid ($)
-                    <input type="number" min={Number(a.minNextBid)} step="1" value={bidAmt} onChange={e => setBidAmt(e.target.value)} />
-                  </label>
-                  <button disabled={!online || busy || endsMs <= nowMs}>
-                    {busy ? 'Submitting…' : a.isLeading ? 'Increase Leading Bid' : `Place Bid · ${money(bidAmt || 0)}`}
-                  </button>
+                  {a.highestBidAmount && Number(a.highestBidAmount) >= Number(a.cataloguePrice || assetItem?.price || Infinity) ? (
+                    <p className="green">Maximum auction price reached — awaiting auction close.</p>
+                  ) : (
+                    <>
+                      <label>Your Bid ($)
+                        <input type="number" min={Number(a.minNextBid)} max={Number(a.cataloguePrice || assetItem?.price || 1e12)} step="1" value={bidAmt} onChange={e => setBidAmt(e.target.value)} />
+                      </label>
+                      <button disabled={!online || busy || endsMs <= nowMs}>
+                        {busy ? 'Submitting…' : a.isLeading ? 'Increase Leading Bid' : `Place Bid · ${money(bidAmt || 0)}`}
+                      </button>
+                    </>
+                  )}
                 </form>
               )}
               {a.isSeller && a.status === 'active' && (

@@ -28,7 +28,12 @@ export function minNextBid(auction) {
   }
   const cur = new Decimal(auction.highestBidAmount);
   const inc = Decimal.max(1, cur.times('0.01').toDecimalPlaces(2));
-  return cur.plus(inc).toDecimalPlaces(2).toString();
+  let next = cur.plus(inc);
+  if (auction.cataloguePrice) {
+    const cap = new Decimal(auction.cataloguePrice);
+    if (next.gt(cap)) next = cap;
+  }
+  return next.toDecimalPlaces(2).toString();
 }
 
 export function validateListingInput(raw = {}, catalog) {
@@ -36,16 +41,17 @@ export function validateListingInput(raw = {}, catalog) {
   const item = catalog?.assets?.find(x => x.id === catalogueId);
   if (!item) throw Error('Eligible luxury asset not found');
 
+  const maxPrice = new Decimal(item.price);
   const startingBid = new Decimal(raw.startingBid || 0);
-  if (!startingBid.isFinite() || startingBid.lt(100) || startingBid.gt('1000000000000')) {
-    throw Error('Starting bid must be between $100 and $1T');
+  if (!startingBid.isFinite() || startingBid.lt(1) || startingBid.gt(maxPrice)) {
+    throw Error(`Starting bid must be between $1 and new asset price ($${maxPrice.toString()})`);
   }
 
   let reservePrice = null;
   if (raw.reservePrice !== undefined && raw.reservePrice !== null && raw.reservePrice !== '') {
     const res = new Decimal(raw.reservePrice);
-    if (!res.isFinite() || res.lt(startingBid) || res.gt('1000000000000')) {
-      throw Error('Reserve price must be at least the starting bid');
+    if (!res.isFinite() || res.lt(startingBid) || res.gt(maxPrice)) {
+      throw Error(`Reserve price must be between starting bid and $${maxPrice.toString()}`);
     }
     reservePrice = res.toDecimalPlaces(2).toString();
   }
@@ -57,6 +63,7 @@ export function validateListingInput(raw = {}, catalog) {
   return {
     item,
     catalogueId,
+    cataloguePrice: maxPrice.toDecimalPlaces(2).toString(),
     startingBid: startingBid.toDecimalPlaces(2).toString(),
     reservePrice,
     durationMs

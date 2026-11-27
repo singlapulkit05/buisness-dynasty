@@ -186,8 +186,8 @@ export default function ShowroomView({
               {isLocked && <span className="badge-pending">IN AUCTION</span>}
             </div>
             <h2 style={{ marginTop: 4 }}>{selected.name}</h2>
-            <div className="profile-kv"><span>Catalogue Value</span><strong>{money(selected.price)}</strong></div>
-            <div className="profile-kv"><span>Instant Resale Quote</span><strong>{money(selected.price)}</strong></div>
+            <div className="profile-kv"><span>New Asset Price</span><strong>{money(selected.price)}</strong></div>
+            <div className="profile-kv"><span>Instant Sell Payout (50%)</span><strong>{money(selected.price * 0.5)}</strong></div>
             <div className="profile-kv"><span>Collection Slot</span><strong>{curIndex + 1} of {ownedItems.length}</strong></div>
 
             {!readOnly && act && (
@@ -197,7 +197,7 @@ export default function ShowroomView({
                   disabled={isLocked}
                   onClick={() => act({ type: 'trade', category: 'assets', item: selected.id, sell: true })}
                 >
-                  {isLocked ? 'Locked in Auction' : `Sell · ${money(selected.price)}`}
+                  {isLocked ? 'Locked in Auction' : `Sell (50%) · ${money(selected.price * 0.5)}`}
                 </button>
                 {onStartAuction && !isLocked && online && (
                   <button onClick={() => onStartAuction(selected)}>Sell at Auction</button>
