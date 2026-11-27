@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import pkg from '../package.json';
 import {
   FEEDBACK_CATEGORIES,
   FEEDBACK_SEVERITIES,
@@ -100,7 +101,7 @@ export default function FeedbackView({ username, online, currentRoute, pendingAc
         reportedSeverity: category === 'Bug report' ? severity : null,
         relatedRoute,
         diagnostics: includeDiag ? {
-          appVersion: '1.0.0',
+          appVersion: pkg.version || '2.4.0',
           platform: navigator.platform || 'web',
           route: currentRoute || 'Home',
           pendingActions: pendingActions || 0
