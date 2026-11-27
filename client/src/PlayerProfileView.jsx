@@ -205,10 +205,13 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
               <div className="company-list">
                 {(bizData?.items || []).map(b => (
                   <button key={b.id} className="company-row" onClick={() => api(`/players/${encUser}/businesses/${b.id}`).then(setBizDetail)}>
-                    <div>
-                      <h3>{b.name}</h3>
-                      <p className="muted">{b.catalogueName} · Lv {b.level} · {b.upgrades.map(u => `${u.name}: ${u.level}`).join(' · ')}</p>
-                      {b.netProfit && <strong className={Number(b.netProfit) >= 0 ? 'green' : 'negative'}>{money(b.netProfit)}/hr</strong>}
+                    <div className="art-heading">
+                      <div className="biz-circle" style={{ background: b.color || '#2563eb' }}><GameArt id={b.type} /></div>
+                      <div>
+                        <h3>{b.name}</h3>
+                        <p className="muted">{b.catalogueName} · Lv {b.level} · {b.upgrades.map(u => `${u.name}: ${u.level}`).join(' · ')}</p>
+                        {b.netProfit && <strong className={Number(b.netProfit) >= 0 ? 'green' : 'negative'}>{money(b.netProfit)}/hr</strong>}
+                      </div>
                     </div>
                     <span className="chevron">›</span>
                   </button>
@@ -255,17 +258,21 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
                   ))}
                 </div>
                 <div className="collection-grid">
-                  {(propData?.items || []).map(p => (
-                    <section key={p.id} className="realestate-card">
-                      <div className="re-footer">
-                        <div>
-                          <strong className="re-price">{money(p.cataloguePrice)}</strong>
-                          <div className="re-loc">{p.name} ({p.qty}x)</div>
-                          {p.netRent && <div className="green re-rent">+{money(p.netRent)}/hr · {p.occupancy}% occ · {p.condition}% cond</div>}
+                  {(propData?.items || []).map(p => {
+                    const propItem = c?.properties?.find(x => x.id === p.id) || p;
+                    return (
+                      <section key={p.id} className="realestate-card">
+                        <div className="card-media"><GameArt id={p.id} item={propItem} wide /><span className="media-pill owned">{p.qty}x</span></div>
+                        <div className="re-footer">
+                          <div>
+                            <strong className="re-price">{money(p.cataloguePrice)}</strong>
+                            <div className="re-loc">{p.name} ({p.qty}x)</div>
+                            {p.netRent && <div className="green re-rent">+{money(p.netRent)}/hr · {p.occupancy}% occ · {p.condition}% cond</div>}
+                          </div>
                         </div>
-                      </div>
-                    </section>
-                  ))}
+                      </section>
+                    );
+                  })}
                 </div>
               </>
             )
@@ -287,7 +294,7 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
               <>
                 <div className="line" style={{ marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
                   <div className="sort-pills">
-                    <button className={assetCat === 'all' ? 'active' : ''} onClick={() => setAssetCat('all')}>All ({assetData?.total || 0})</button>
+                    <button className={assetCat === 'all' ? 'active' : ''} onClick={() => setAssetCat('all')}>All ({(assetData?.categories || []).reduce((n, ct) => n + ct.owned, 0)})</button>
                     {(assetData?.categories || []).map(ct => (
                       <button key={ct.category} className={assetCat === ct.category ? 'active' : ''} onClick={() => setAssetCat(ct.category)}>
                         {ct.category} ({ct.owned}/{ct.total})
@@ -297,12 +304,15 @@ export default function PlayerProfileView({ username, c, online, navigate, onBac
                   {c && <button className="small" onClick={openShowroom}>Visit Garage / Hangar / Marina</button>}
                 </div>
                 <div className="collection-grid">
-                  {(assetData?.items || []).map(a => (
-                    <section key={a.id} className="garage-card">
-                      <div className="garage-media"><GameArt id={a.id} item={a} wide />{a.inAuction && <span className="media-pill owned">In Auction</span>}</div>
-                      <div className="garage-body"><h3>{a.name}</h3><p className="garage-tier">Catalogue: {money(a.cataloguePrice)}</p></div>
-                    </section>
-                  ))}
+                  {(assetData?.items || []).map(a => {
+                    const catItem = c?.assets?.find(x => x.id === a.id) || a;
+                    return (
+                      <section key={a.id} className="garage-card">
+                        <div className="garage-media"><GameArt id={a.id} item={catItem} wide />{a.inAuction && <span className="media-pill owned">In Auction</span>}</div>
+                        <div className="garage-body"><h3>{a.name}</h3><p className="garage-tier">Catalogue: {money(a.cataloguePrice)}</p></div>
+                      </section>
+                    );
+                  })}
                 </div>
               </>
             )
