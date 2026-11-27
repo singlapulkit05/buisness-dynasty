@@ -6,7 +6,7 @@ import {stockTotalShares,getOwnershipTier} from '../../shared/catalog.js';
 import {money} from '../../shared/format.js';
 import {api} from './storage.js';
 const ranges={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760};
-export default function MarketCard({item,category,owned,costBasis,watched,orders,at,cash,act,online=true,liveQuote=null,onCloudUpdate}){
+export default function MarketCard({item,category,owned,costBasis,watched,orders,at,cash,act,online=true,liveQuote=null,onCloudUpdate,onAlert,onConfirm}){
  const [range,R]=useState('1W'),[side,S]=useState('buy'),[orderKind,K]=useState('market'),[targetP,TP]=useState(''),[mode,M]=useState('qty'),[qty,Q]=useState('1'),[usd,U]=useState('1000'),[hover,H]=useState(null),[candles,setCandles]=useState([]),[candles1h,setCandles1h]=useState([]),[tradeBusy,setTradeBusy]=useState(false),[tradeMsg,setTradeMsg]=useState(''); const id=useId().replace(/:/g,'');
 
  useEffect(()=>{
@@ -46,27 +46,45 @@ export default function MarketCard({item,category,owned,costBasis,watched,orders
  const usdPresets=[100,1000,10000,100000];
  async function submitLiveTrade(){
   if(!online||tradeBusy)return;
+  const estAmt=orderKind==='market'?total:new Decimal(Number(targetP)||0).times(effectiveQty);
+  if(onConfirm){
+   const ok=await onConfirm({
+    title:orderKind==='market'?(side==='buy'?`Confirm Buy: ${item.name}`:`Confirm Sell: ${item.name}`):`Confirm ${orderKind.toUpperCase()} ${side.toUpperCase()}`,
+    message:`${side==='buy'?'Buy':'Sell'} ${effectiveQty.toLocaleString()} ${category==='stocks'?'shares':'units'} of ${item.name} ${orderKind==='market'?`at ~${money(current)} (${money(estAmt)} total)`:`@ ${money(targetP)} (${money(estAmt)} total)`}.`,
+    confirmLabel:side==='buy'?'Buy Now':'Sell Now',
+    danger:side==='sell'
+   });
+   if(!ok)return;
+  }
   setTradeBusy(true);setTradeMsg('');
   try{
    if(orderKind==='market'){
     const res=await api('/market/trade',{category,item:item.id,qty:effectiveQty,sell:side==='sell'});
     if(onCloudUpdate&&res.cloud)await onCloudUpdate(res.cloud);
-    setTradeMsg(`${side==='buy'?'Bought':'Sold'} ${effectiveQty} @ ${money(res.fill.price)}`);
+    const m=`${side==='buy'?'Bought':'Sold'} ${effectiveQty} @ ${money(res.fill.price)}`;
+    setTradeMsg(m);
+    if(onAlert)onAlert('Order Executed',m,'success');
    }else{
     const res=await api('/market/orders',{category,item:item.id,side,kind:orderKind,targetPrice:Number(targetP),qty:effectiveQty});
     if(onCloudUpdate&&res.cloud)await onCloudUpdate(res.cloud);
-    setTradeMsg(res.filled?`Order filled @ ${money(res.price)}`:`${orderKind.toUpperCase()} ${side} placed`);
+    const m=res.filled?`Order filled @ ${money(res.price)}`:`${orderKind.toUpperCase()} ${side} placed`;
+    setTradeMsg(m);
+    if(onAlert)onAlert('Order Submitted',m,'success');
    }
-  }catch(e){setTradeMsg(e.message)}finally{setTradeBusy(false)}
+  }catch(e){setTradeMsg(e.message);if(onAlert)onAlert('Trade Failed',e.message,'error')}finally{setTradeBusy(false)}
  }
  async function cancelLiveOrder(orderId){
   if(!online||tradeBusy)return;
+  if(onConfirm){
+   const ok=await onConfirm({title:'Cancel Open Order',message:`Cancel this open order for ${item.name} and release reserved funds/shares?`,confirmLabel:'Cancel Order',danger:true});
+   if(!ok)return;
+  }
   setTradeBusy(true);setTradeMsg('');
   try{
    const res=await api('/market/orders/'+orderId,undefined,'DELETE');
    if(onCloudUpdate&&res.cloud)await onCloudUpdate(res.cloud);
    setTradeMsg('Order cancelled');
-  }catch(e){setTradeMsg(e.message)}finally{setTradeBusy(false)}
+  }catch(e){setTradeMsg(e.message);if(onAlert)onAlert('Cancel Failed',e.message,'error')}finally{setTradeBusy(false)}
  }
  return <section className="market-card"><div className="line"><div className="art-heading"><GameArt id={item.id}/><div><span className="eyebrow">{category==='stocks'?'EQUITY':'DIGITAL ASSET'} · {online&&liveQuote?<span className="green">LIVE</span>:<span className="negative">OFFLINE QUOTE</span>}</span><h3>{item.name}</h3></div></div><div className="line" style={{gap:6}}><button className="secondary small" onClick={()=>act({type:'toggleWatchlist',item:item.id})}>{watched?'★ Watched':'☆ Watch'}</button><span className="tag">{owned.toLocaleString()} owned</span></div></div><div className="market-price">{money(current)}</div><div className={up?'green':'negative'}>{up?'+':''}{change.toFixed(2)}% <span className="muted">· {range}{liveQuote?.updatedAt?` · ${new Date(liveQuote.updatedAt).toLocaleTimeString()}`:''}</span></div>{owned>0&&cost>0&&<div className={pnl>=0?'green':'negative'} style={{fontSize:13,marginTop:4}}>P&amp;L: {pnl>=0?'+':''}{money(pnl)} ({pnl>=0?'+':''}{pnlPct.toFixed(2)}%)</div>}
  <div className="range-tabs">{Object.keys(ranges).map(r=><button key={r} className={range===r?'active':''} onClick={()=>{R(r);H(null)}}>{r}</button>)}</div>

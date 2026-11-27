@@ -13,7 +13,7 @@ const timeLeft = ms => {
   return `${h}h ${String(m).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`;
 };
 
-export default function AuctionsView({ c, online, route, navigate, onCloudUpdate, onOpenProfile }) {
+export default function AuctionsView({ c, online, route, navigate, onCloudUpdate, onOpenProfile, onAlert, onConfirm }) {
   const [sub, setSub] = useState(route.name === 'auctions_mine' ? 'mine' : 'live');
   const [items, setItems] = useState([]);
   const [myListings, setMyListings] = useState([]);
@@ -85,14 +85,24 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
   async function placeBid(e) {
     e.preventDefault();
     if (!detail || !online || busy) return;
+    if (onConfirm) {
+      const ok = await onConfirm({
+        title: `Confirm Bid: ${detail.auction.assetName}`,
+        message: `Place a binding bid of ${money(bidAmt || 0)}? Funds will be held in escrow until outbid or settled.`,
+        confirmLabel: 'Place Bid'
+      });
+      if (!ok) return;
+    }
     setBusy(true); setErr(''); setMsg('');
     try {
       const res = await api(`/auctions/${detail.auction._id}/bids`, { amount: Number(bidAmt) });
       if (onCloudUpdate && res.cloud) await onCloudUpdate(res.cloud);
       setMsg('Bid accepted and funds placed in escrow.');
+      if (onAlert) onAlert('Bid Accepted', `Leading bid ${money(bidAmt)} placed in escrow.`, 'success');
       await loadDetail(detail.auction._id);
     } catch (e) {
       setErr(e.message);
+      if (onAlert) onAlert('Bid Rejected', e.message, 'error');
     } finally {
       setBusy(false);
     }
@@ -100,7 +110,10 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
 
   async function cancelListing(id) {
     if (!online || busy) return;
-    if (!confirm('Cancel this auction and unlock your asset?')) return;
+    const ok = onConfirm
+      ? await onConfirm({ title: 'Cancel Auction', message: 'Cancel this auction listing and unlock your asset?', confirmLabel: 'Cancel Listing', danger: true })
+      : confirm('Cancel this auction and unlock your asset?');
+    if (!ok) return;
     setBusy(true); setErr(''); setMsg('');
     try {
       const res = await api(`/auctions/${id}/cancel`, {});
@@ -109,6 +122,7 @@ export default function AuctionsView({ c, online, route, navigate, onCloudUpdate
       await loadDetail(id);
     } catch (e) {
       setErr(e.message);
+      if (onAlert) onAlert('Cancel Failed', e.message, 'error');
     } finally {
       setBusy(false);
     }

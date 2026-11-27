@@ -195,11 +195,7 @@ export default function ShowroomView({
                 <button
                   className="secondary"
                   disabled={isLocked}
-                  onClick={() => {
-                    if (confirm(`Sell ${selected.name} for ${money(selected.price)}?`)) {
-                      act({ type: 'trade', category: 'assets', item: selected.id, sell: true });
-                    }
-                  }}
+                  onClick={() => act({ type: 'trade', category: 'assets', item: selected.id, sell: true })}
                 >
                   {isLocked ? 'Locked in Auction' : `Sell · ${money(selected.price)}`}
                 </button>

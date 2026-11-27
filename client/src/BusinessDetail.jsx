@@ -108,7 +108,7 @@ export default function BusinessDetail({ s, b, x, c, bizColor, onBack, act, rewa
             {s.boosts.filter(q => q.target === b.id).map(q => (
               <p className="green" key={q.id}>Active {q.id}: {dur(q.end - s.at)}</p>
             ))}
-            <button className="btn-danger" onClick={() => { if (confirm(`Sell ${b.name || x.name} for ${money(Number(val) * 0.7)}?`)) { act({ type: 'sellBusiness', target: b.id }); onBack(); } }}>
+            <button className="btn-danger" onClick={async () => { if (await act({ type: 'sellBusiness', target: b.id })) onBack(); }}>
               Sell business · {money(Number(val) * 0.7)}
             </button>
           </section>
